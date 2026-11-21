@@ -287,6 +287,32 @@
     return items;
   }
 
+  /** Paragraphs without a claim have no id, so their key is their position (`s1/3`). A paragraph inserted or removed in the
+   *  document since `base` was written moves the later positions. This renames the positional keys of `base` and `theirs`
+   *  (which was made from `base`) to the keys the same paragraphs have in `ours` now: the paragraphs of a section are
+   *  aligned by text (longest common run), and what lies between two matches is paired in order (a paragraph edited in the
+   *  document). A base paragraph with no partner (removed in the document) gets a key that matches nothing. */
+  function realign(base, ours, theirs) {
+    const POS = /^(.+)\/\d+$/;
+    const group = x => { const g = new Map(); for (const p of x.pieces) { const m = p.key.match(POS); if (m) { if (!g.has(m[1])) g.set(m[1], []); g.get(m[1]).push(p); } } return g; };
+    const bg = group(base), og = group(ours), rename = new Map();
+    for (const [sec, bs] of bg) {
+      const os = og.get(sec) || [];
+      const n = bs.length, m = os.length, lcs = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+      for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) lcs[i][j] = same(bs[i].body, os[j].body) ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+      const pair = (i, j) => rename.set(bs[i].key, os[j].key);
+      let i = 0, j = 0, gi = 0, gj = 0;   // gi, gj: start of the current gap
+      const closeGap = () => { for (let k = 0; gi + k < i; k++) { if (gj + k < j) pair(gi + k, gj + k); else rename.set(bs[gi + k].key, 'gone:' + bs[gi + k].key); } };
+      while (i < n && j < m) {
+        if (same(bs[i].body, os[j].body)) { closeGap(); pair(i, j); i++; j++; gi = i; gj = j; }
+        else if (lcs[i + 1][j] >= lcs[i][j + 1]) i++;
+        else j++;
+      }
+      i = n; j = m; closeGap();
+    }
+    for (const x of [base, theirs]) for (const p of x.pieces) if (rename.has(p.key)) p.key = rename.get(p.key);
+  }
+
   /** Take the edits of an outside .tex over into document `d` (changed in place).
    *  opts: theirs (the .tex), base (the .tex as last written, or null), and the export options of latex.js (template,
    *  figurePath, bibFiles, …), with which the document's own .tex is made for the comparison.
@@ -296,6 +322,7 @@
     const T = split(opts.theirs);
     if (!T) { note('skipped', '', 'The .tex has no "%% apg body" line or no end ("%% apg end", \\end{document}): it was not written by Archipelago, or it is cut off'); return { changed: 0, report }; }
     const ours = L.toLatex(d, opts), O = split(ours.tex), B = opts.base ? split(opts.base) : null;
+    if (B) realign(B, O, T);
     const map = x => new Map(x.pieces.map(p => [p.key, p]));
     const om = map(O), tm = map(T), bm = B ? map(B) : null;
     const items = itemsOf(d), inserts = [];

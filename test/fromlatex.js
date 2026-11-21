@@ -112,6 +112,18 @@ d.sections[0].paragraphs.push(C.newParagraph({ text: 'Written in the document af
 r = take(d, base4.replace('Modern optimizers can handle', 'Modern optimizers surely can handle'), base4);
 ok(d.sections[0].paragraphs.at(-1).text === 'Written in the document after the export.' && para(d, 'c1').text.includes('surely'), 'a paragraph new in the document is not emptied by an outside edit', r.report);
 
+console.log('paragraphs without a claim');
+d = C.parse('<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\nAlpha text.\n\nBeta text.\n\nGamma text.\n');
+const base5 = exp(d);
+d.sections[0].paragraphs.splice(0, 0, C.newParagraph({ text: 'Inserted first in the document.' }));
+r = take(d, base5.replace('Gamma text.', 'Gamma text, edited in the .tex.'), base5);
+ok(d.sections[0].paragraphs.map(p => p.text).join('|') === 'Inserted first in the document.|Alpha text.|Beta text.|Gamma text, edited in the .tex.', 'a paragraph inserted in the document does not shift an edit of the .tex onto another paragraph', d.sections[0].paragraphs.map(p => p.text));
+d = C.parse('<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\nAlpha text.\n\nBeta text.\n\nGamma text.\n');
+const base6 = exp(d);
+d.sections[0].paragraphs.splice(0, 1);
+r = take(d, base6.replace('Gamma text.', 'Gamma text, edited in the .tex.'), base6);
+ok(d.sections[0].paragraphs.map(p => p.text).join('|') === 'Beta text.|Gamma text, edited in the .tex.', 'and neither does one removed in the document', d.sections[0].paragraphs.map(p => p.text));
+
 console.log('papers of claims');
 d = C.parse('<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\n<!-- claim: x | id=c1 -->\nFirst paragraph.\n\n<!-- claim: y | id=c2 -->\nSecond paragraph.\n\n<!-- claim: [[S/@p2020|@p2020]] | id=c3 -->\n');
 t = exp(d);

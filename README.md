@@ -43,11 +43,17 @@ Write a paper in Obsidian twice over: as a **map** of claims and arguments, and 
 - **Files outside the vault:** LaTeX build files go in `~/.cache/archipelago-latex/`, Overleaf working copies in `~/.cache/archipelago-overleaf/`.
 - **Other plugins:** it reads Completr's word list, if Completr is installed, to make suggestions.
 
+## How documents open
+
+A document is a Markdown file, and Obsidian has no API to give a view to some `.md` files and not others. So the plugin wraps `WorkspaceLeaf.prototype.setViewState`: when a file starts with the Archipelago format line, the tab gets this plugin's view instead of the note editor. Only that line decides, nothing else about the leaf is changed, and any failure opens the file as a normal note. "Open as Markdown" is in the view's menu. The wrapper is removed when the plugin is disabled, or switches itself off if another plugin has patched on top of it.
+
 ## Planned
 
 AI help for templates and compile errors, collapse and drag of subsections, and Overleaf comments.
 
 ## Development
+
+The document model and the LaTeX export and import (`src/core.js`, `latex.js`, `fromlatex.js`, `richtext.js`) are plain UMD modules that do not depend on Obsidian, and `npm test` tests them on their own. They live only in this repository.
 
 `npm test` runs the fast tests. `npm run test:e2e` starts a real Obsidian, with Overleaf played by a local Git repository. `node build.js --install <vault>` builds and installs. `npm version x.y.z` followed by pushing the tag makes a draft release.
 
