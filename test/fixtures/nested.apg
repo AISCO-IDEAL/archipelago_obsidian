@@ -1,0 +1,25 @@
+<!-- archipelago v1 -->
+# Method
+<!-- island: id=s3 x=40 y=80 -->
+## Formulation
+<!-- claim: The problem is a QP | id=c1 -->
+Text of c1.
+
+### Projection step
+<!-- subsection: Projection keeps every iterate feasible | id=c5 needs=c1 -->
+<!-- claim: The projection is closed-form | id=c6 -->
+Text of c6.
+
+#### Box constraints
+<!-- subsection: | id=c9 -->
+<!-- claim: Clipping is enough for boxes | id=c10 -->
+Text of c10.
+
+<!-- endgroup ### -->
+
+<!-- claim: Convergence follows from c5 | id=c7 needs=c5 -->
+Text of c7, back in "Formulation".
+
+<!-- endgroup -->
+
+<!-- claim: An ungrouped claim | id=c8 -->

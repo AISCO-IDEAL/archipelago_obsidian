@@ -1,0 +1,3 @@
+/* The view hosts its own shadow root (see ui.js); this only removes the padding Obsidian puts around views. */
+.workspace-leaf-content[data-type="archipelago-view"] > .view-content { padding: 0; overflow: hidden; }
+.apg-content { position: relative; }

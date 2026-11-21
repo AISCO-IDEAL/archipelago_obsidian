@@ -1,0 +1,125 @@
+---
+title: Differentiable Signed Distance Programs for Constraint-Aware Shape Optimization
+thesis: Writing CAD models as differentiable signed distance programs lets gradient-based optimizers satisfy hard geometric constraints without remeshing.
+---
+<!-- archipelago v1: `# ` heading = section, island = its map position (id=s*). claim = one-line summary card of the paragraph below it (id=c*), needs = ids it depends on, pos/w = floating figure/table/equation card on the map, `## ` = claim group. Notes at the end = loose notes on the map, not in the paper (id=u*), to = section or claim a note points at. -->
+# Introduction
+<!-- island: id=s1 x=40 y=60 -->
+<!-- synopsis: Shape optimization stalls on remeshing and constraint handling; SDF programs remove both obstacles. -->
+## The gap
+
+<!-- claim: Gradient-based shape optimization is bottlenecked by the mesh, not the optimizer. | id=c1 -->
+Modern optimizers can handle thousands of design variables, yet most shape optimization pipelines still expose only a handful of them. The limiting factor is the geometry kernel: every design update requires a new mesh, and every new mesh breaks the chain of derivatives.
+
+<!-- claim: Signed distance programs give exact derivatives of geometry with respect to parameters. | id=c2 -->
+A signed distance program composes primitives, Boolean operations, and smooth blends into a single function that returns the distance to the surface. Because each operation is differentiable almost everywhere, the whole program can be differentiated with standard automatic differentiation.
+
+<!-- claim: Hard constraints, not objectives, are the open problem. | id=c3 -->
+Differentiating an objective through geometry is now routine. Guaranteeing that the optimized shape still fits its housing, clears its neighbors, and respects manufacturing limits is not.
+
+<!-- endgroup -->
+
+<!-- claim: We contribute a projection layer, a benchmark suite, and an open implementation. | id=c4 needs=c3,c20 -->
+Our projection layer restores feasibility after every optimizer step, and on three benchmark problems it is the only method that is feasible on every seed.
+
+<!-- claim: Geometry becomes a tensor expression rather than a file. | id=c5 -->
+
+# Related Work
+<!-- island: id=s2 x=640 y=60 -->
+<!-- synopsis: Prior work splits into implicit neural shapes, parametric CAD, and constrained learning; none combines all three. -->
+<!-- claim: Neural implicit shapes are expressive but lack editable parameters. | id=c6 -->
+Learned implicit representations reconstruct complex shapes from sparse data with remarkable fidelity. Their parameters, however, are network weights with no engineering meaning.
+
+<!-- claim: Parametric CAD kernels are editable but not differentiable. | id=c7 -->
+Boundary representation kernels remain the industry standard because every feature maps to a named, editable parameter. Their topological operations are discrete, so derivatives either do not exist or must be approximated by perturbation.
+
+<!-- claim: Differentiable sketch rasterization recovers gradients only in 2D. | id=c8 -->
+Recent work on differentiable rasterization of CAD sketches recovers gradients, but only for planar profiles.
+
+<!-- claim: Constrained learning methods assume constraints are cheap to evaluate. | id=c9 -->
+Projection and penalty methods from constrained learning enforce feasibility on network outputs. They typically assume closed-form constraint functions and ignore the cost of evaluating geometric queries.
+
+# Background
+<!-- island: id=s3 x=1240 y=620 -->
+<!-- synopsis: Signed distance functions, smooth Booleans, and the eikonal property we rely on. -->
+<!-- claim: A signed distance function encodes a solid as the zero sublevel set of a scalar field. | id=c10 -->
+A signed distance function maps every point in space to its distance from the surface, negative inside and positive outside. Solids are recovered as the region where the function is non-positive.
+
+<!-- claim: Smooth Booleans trade exact distance for differentiability. | id=c11 needs=c10 -->
+The minimum and maximum operators implement union and intersection but are not differentiable where the arguments tie. Smooth variants blend the two fields over a small radius and restore differentiability.
+
+<!-- claim: The smooth minimum blends two fields over a radius k. | id=c12 pos=990,860 -->
+$$ smin(a, b; k) = -k log(exp(-a/k) + exp(-b/k)) $$
+
+<!-- claim: The blend error is bounded by the blend radius. | id=c13 -->
+Classical results bound this deviation in terms of the blend radius, which lets us budget the error explicitly.
+
+<!-- claim: Clearance and containment are pointwise queries on the field. | id=c14 -->
+Point containment, clearance, and offset queries all cost one field evaluation per point.
+
+# Method
+<!-- island: id=s4 x=640 y=620 -->
+<!-- synopsis: A projection layer maps any parameter update back onto the feasible set in one step. -->
+<!-- claim: Constraints are expressed as integrals of the signed distance field. | id=c15 needs=c10 -->
+Containment, clearance, and minimum wall thickness can all be written as integrals of a penalty on the signed distance field over a sampling domain.
+
+<!-- claim: A sparse grid keeps constraint cost proportional to surface area. | id=c16 -->
+The integrals are estimated on a sparse grid that is refined only near the zero level set.
+
+## Projection step
+
+<!-- claim: One projection step per iteration is enough in practice. | id=c17 needs=c15,c12 -->
+After each optimizer step we apply a single Newton-type projection toward the feasible set. The projection uses the Jacobian of the constraint integrals with respect to design parameters, which the signed distance program provides for free.
+
+<!-- claim: The projection is agnostic to the upstream optimizer. | id=c18 -->
+Because the layer operates on parameters rather than on the optimizer state, it composes with gradient descent, quasi-Newton methods, and learned amortized solvers alike.
+
+<!-- claim: Constraint weights are adapted from the projection residual, not hand-tuned. | id=c19 -->
+
+# Experiments
+<!-- island: id=s5 x=40 y=620 -->
+<!-- synopsis: Three design problems, two baselines, feasibility and objective reported separately. -->
+<!-- claim: We evaluate on a bracket, a battery pack, and a blended wing body. | id=c24 -->
+The three problems differ in size and in the kind of constraint that dominates:
+- a bracket that minimizes mass under a stiffness surrogate, with twelve parameters,
+- a battery pack that places forty cells inside a fixed housing with clearance constraints,
+  - where clearance is measured between every pair of cells,
+- a blended wing body that maximizes a lift-to-drag surrogate while containing a cabin volume.
+
+<!-- claim: Projection reaches full feasibility where penalty methods plateau below it. | id=c20 needs=c17 -->
+Across all three problems, the projection layer returned feasible designs on every seed. Penalty baselines reached comparable objectives but left residual interference on a substantial fraction of runs.
+
+<!-- claim: Feasible fraction over iterations, per method. | id=c21 needs=c20 pos=60,1160 -->
+![Fraction of feasible runs over iterations for the three methods.](figures/feasibility.png)
+
+<!-- claim: Final feasibility and wall-clock cost per method. | id=c22 pos=1290,1080 -->
+| method | feasible | time |
+|---|---|---|
+| projection | 100% | 1.0x |
+| penalty | 71% | 0.9x |
+| aug. Lagrangian | 94% | 3.1x |
+
+<!-- claim: Grid resolution, not the optimizer, dominates the remaining error. | id=c23 -->
+Doubling the sparse grid resolution halved the residual constraint violation, while changing the optimizer had no measurable effect.
+
+<!-- claim: The blended wing body shows the method scales to hundreds of parameters. | id=c25 -->
+
+# Discussion
+<!-- island: id=s6 x=1240 y=60 -->
+<!-- synopsis: What the results do and do not show, and where the approach breaks. -->
+<!-- claim: The method assumes the feasible set is locally well conditioned. | id=c26 -->
+When constraints are nearly degenerate, the Jacobian used by the projection becomes ill conditioned and the single step can overshoot. Damping the step restores stability at a modest cost in iterations.
+
+<!-- claim: Smooth blends introduce a small but systematic geometric bias. | id=c27 needs=c11 -->
+Because smooth Booleans do not return exact distance, reported clearances are slightly conservative near blended edges.
+
+<!-- claim: Constraint satisfaction, not differentiation, was the missing piece for differentiable CAD. | id=c28 -->
+We showed that signed distance programs expose exactly the derivatives a projection layer needs, and that one projection step per iteration suffices on realistic problems.
+
+<!-- claim: Next steps are adaptive sampling and export to boundary representations. | id=c29 -->
+
+Paragraphs without a claim still show up, as "(no claim)" cards.
+
+<!-- notes: loose notes on the map, not part of the paper -->
+- A user study with designers could test the editability claim. <!-- id=u1 pos=420,1180 -->
+- Compare against level-set topology optimization on the bracket. <!-- id=u2 to=c24 pos=700,1140 -->

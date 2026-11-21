@@ -1,0 +1,13 @@
+{
+  "name": "obsidian-archipelago",
+  "version": "0.3.0",
+  "description": "Obsidian plugin: write a paper as a map of claims and as prose, with LaTeX, PDF, Zotero citations and Overleaf sync.",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node test/core.js && node test/latex.js && node test/fromlatex.js && node test/merge.js",
+    "test:e2e": "node test/e2e.js",
+    "version": "node version-bump.js && git add manifest.json versions.json"
+  }
+}

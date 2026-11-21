@@ -1,0 +1,54 @@
+# Archipelago
+
+Write a paper in Obsidian twice over: as a **map** of claims and arguments, and as **prose**. Both are one Markdown file. The file becomes LaTeX and a PDF, with Zotero citations and two-way **Overleaf** sync.
+
+## Install
+
+- **Obsidian:** Settings › Community plugins › Browse › *Archipelago*. Desktop only.
+- **PDF:** You need a TeX distribution: TeX Live, MiKTeX or MacTeX.
+  - If Obsidian is a Flatpak, install TeX Live for it once:
+    `flatpak install flathub org.freedesktop.Sdk.Extension.texlive//26.08`
+    The branch must match Obsidian's runtime. Settings › Archipelago shows the exact command.
+- **Overleaf sync:** You need an Overleaf plan with Git integration and `git` (the Flatpak includes it). Paste a Git token (Overleaf › Account settings › Git integration) into Settings › Archipelago.
+
+## Features
+
+- **Map:** islands (sections), claim cards, links (`needs`), notes, nested subsections down to LaTeX's depth, and figure, table and equation cards.
+- **Prose:** the text of each claim. Numbered headings, styles (bold, italic, strikethrough, highlight, colour, comment) via the context menu or shortcuts, link suggestions.
+- **LaTeX / PDF:**
+  - Templates live in `<Archipelago folder>/latex_templates/`.
+  - Each document has a folder with `figures/`, `.bib`, `.tex` and `.pdf`. The folder is a complete project that Overleaf can compile.
+  - The LaTeX view can be edited. *Apply* takes the edits back into the document.
+- **Citations:** `[@key]`, or links to Zotero/ZotFlow literature notes. Entries go into the document's `.bib` automatically. Claims about a paper cite it at the end of their subsection and of the linked ones.
+- **Overleaf:**
+  - Zip export for upload.
+  - Two-way Git sync, by hand or as auto-sync every N minutes for each note.
+  - Overleaf's edits come back into the document: text, headings, captions, tables, equations, title, author and date.
+  - A changed preamble can be kept as the document's template.
+  - Conflicts ask.
+- **The way back:** a `.tex` edited elsewhere can be taken over. LaTeX that has no Markdown form stays raw LaTeX, so nothing is lost.
+
+## Limitations
+
+- **Not taken over from LaTeX:** claims, links and map positions (they are not in the `.tex`), heading-level changes, and removed headings or blocks.
+- **Overleaf:** comments and tracked changes are not part of its Git data, so they do not sync.
+- **Auto-sync:** it only runs while the note is open, and it pauses when a decision is needed.
+- **Desktop only.**
+
+## Privacy
+
+- **Network:** only Overleaf sync goes online, to `git.overleaf.com`. The token is sent only there.
+- **Token:** stored in Obsidian's secret storage, the system keychain, from Obsidian 1.11.4. Older versions store it in plain text in the plugin settings.
+- **Programs it starts:** `pdflatex`, `bibtex` or `biber`, and `git`.
+- **Files outside the vault:** LaTeX build files go in `~/.cache/archipelago-latex/`, Overleaf working copies in `~/.cache/archipelago-overleaf/`.
+- **Other plugins:** it reads Completr's word list, if Completr is installed, to make suggestions.
+
+## Planned
+
+AI help for templates and compile errors, collapse and drag of subsections, and Overleaf comments.
+
+## Development
+
+`npm test` runs the fast tests. `npm run test:e2e` starts a real Obsidian, with Overleaf played by a local Git repository. `node build.js --install <vault>` builds and installs. `npm version x.y.z` followed by pushing the tag makes a draft release.
+
+MIT © dieGurken
