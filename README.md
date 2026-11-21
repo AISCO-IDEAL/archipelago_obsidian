@@ -4,7 +4,10 @@ Write a paper in Obsidian twice over: as a **map** of claims and arguments, and 
 
 ## Install
 
-- **Obsidian:** Settings › Community plugins › Browse › *Archipelago*. Desktop only.
+- **Obsidian:** Settings › Community plugins › Browse › *Archipelago* (once it is listed; until then use one of the two ways below). Desktop only.
+- **Before it is listed, with BRAT:** install the *BRAT* plugin, run *BRAT: Add a beta plugin for testing*, enter `AISCO-IDEAL/archipelago_obsidian`, then enable *Archipelago*. BRAT also installs later releases.
+- **Before it is listed, by hand:** download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/AISCO-IDEAL/archipelago_obsidian/releases/latest) into `<vault>/.obsidian/plugins/archipelago/` (create the folder), restart Obsidian, and enable *Archipelago* under Settings › Community plugins. Updates are done the same way.
+- **Before it is listed, from source:** `git@github.com:AISCO-IDEAL/archipelago_obsidian.git`, then `cd archipelago_obsidian` and `node build.js --install <vault>` (Node 22) builds the plugin and copies it into `<vault>/.obsidian/plugins/archipelago/`. Restart Obsidian and enable *Archipelago*. After a `git pull`, run it again. It does not touch the plugin's `data.json`.
 - **PDF:** You need a TeX distribution: TeX Live, MiKTeX or MacTeX.
   - If Obsidian is a Flatpak, install TeX Live for it once:
     `flatpak install flathub org.freedesktop.Sdk.Extension.texlive//26.08`
