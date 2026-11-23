@@ -64,4 +64,4 @@ MIT © dieGurken
 
 ## Installing pdflatex
 
-Debian/Ubuntu: `sudo apt-get install -y texlive-latex-base texlive-fonts-recommended texlive-latex-extra`. Conference templates need the last two: `texlive-fonts-recommended` has the Times metrics (ICML, NeurIPS), `texlive-latex-extra` has `forloop`, `cleveref` and similar packages. Check with `pdflatex --version`.
+Debian/Ubuntu: `sudo apt-get install -y --no-install-recommends texlive-latex-base texlive-fonts-recommended`. `texlive-fonts-recommended` has the Times metrics that conference templates (ICML, NeurIPS) need. Avoid `texlive-latex-extra` (large, pulls in Java); put a single missing package such as `forloop.sty` (CTAN: unzip, `latex forloop.ins`) beside the `.tex` instead. Check with `pdflatex --version`.
