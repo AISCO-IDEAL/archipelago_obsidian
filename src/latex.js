@@ -158,7 +158,8 @@
   function wikiCitation(t) {
     const bar = t.indexOf('|'), target = (bar >= 0 ? t.slice(0, bar) : t).replace(/#.*$/, ''), alias = bar >= 0 ? C.trimmed(t.slice(bar + 1)) : '';
     const name = target.slice(target.lastIndexOf('/') + 1).replace(/\.md$/i, '');
-    for (const c of [alias, name]) if (/^@[^\s,{}@]+$/.test(c)) return c.slice(1);
+    // the note's own name first (`Source/@key`): the alias is text typed by hand, and a typo in it must not change the key
+    for (const c of [name, alias]) if (/^@[^\s,{}@]+$/.test(c)) return c.slice(1);
     return null;
   }
 
@@ -608,7 +609,21 @@
     for (const b of bibFiles) if (/[\s,%#{}]/.test(b)) ctx.warnings.push({ key: '', text: `BibTeX cannot use the file name ${b}.bib (blanks or special characters): rename it` });
     if (ctx.cites.size && !bibFiles.length) ctx.warnings.push({ key: '', text: 'The text cites, but there is no .bib file' });
     if (opts.bibKeys) {
-      for (const k of ctx.cites) if (!opts.bibKeys.has(k)) ctx.warnings.push({ key: '', text: 'Unknown citation key ' + k });
+      // where each key is cited first (the claim or paragraph, to show it and to say which one in the message)
+      const where = new Map();
+      for (const sg of segs) for (const k of sg.cites || []) if (!where.has(k)) where.set(k, sg.key.replace(/^cite:/, ''));
+      const label = id => { for (const s of d.sections) for (const p of s.paragraphs) if (p.cid === id) { const t = C.oneLine(p.claim || p.text || '').slice(0, 40); return t ? `"${t}"` : id; } return ''; };
+      for (const k of ctx.cites) {
+        if (opts.bibKeys.has(k)) continue;
+        const at = where.get(k) || '', place = at ? label(at) : '';
+        ctx.warnings.push({ key: at, text: `Unknown citation key ${k}${place ? ' (in ' + place + ')' : ''}: no .bib file has an entry for it and no literature note has it as its citationKey. Check the key, or add the paper in Zotero.` });
+      }
+    }
+    // A link that ends with one ] ([[@key]) is not a link: Markdown takes the end of it as a citation [@key], which is unknown.
+    for (const s of d.sections) for (const p of s.paragraphs) {
+      for (const text of [p.claim, p.text]) {
+        for (const m of String(text || '').matchAll(/\[\[[^\[\]\n|]*\](?!\])/g)) ctx.warnings.push({ key: p.cid || '', text: `Unfinished link ${m[0].slice(0, 60)}: it ends with one ] where ]] is needed` });
+      }
     }
     const bibliography = ctx.cites.size && bibFiles.length ? '\\bibliographystyle{plainnat}\n\\bibliography{' + bibFiles.join(',') + '}' : '';
     const values = {

@@ -75,7 +75,7 @@ r = body('<!-- claim: F | id=c5 -->\n![cap](gone.png)\n', { figurePath: () => nu
 ok(r.warnings.some(w => w.key === 'c5' && w.text.includes('Missing image')), 'a missing image is reported');
 r = body('<!-- claim: Only a claim | id=c6 -->\n\n<!-- claim: B | id=c7 -->\nText [@k].\n', { bibFiles: ['refs'], bibKeys: new Set() });
 ok(!r.tex.includes('c6'), 'a claim without prose is not in the paper');
-ok(r.warnings.some(w => w.text === 'Unknown citation key k'), 'an unknown key is reported');
+ok(r.warnings.some(w => w.text.startsWith('Unknown citation key k ') && w.key === 'c7'), 'an unknown key is reported');
 r = body('<!-- claim: B | id=c7 -->\nText [@k].\n');
 ok(r.warnings.some(w => w.text.includes('no .bib file')), 'citing without a .bib is reported');
 
@@ -94,7 +94,7 @@ const cr = L.toLatex(cdoc, { template: '{{body}}', bibFiles: ['d'], bibKeys: new
 ok(cr.tex.includes('\\cite{a2020,b2021,c2022,d2023}') && cr.tex.indexOf('\\cite{a2020,b2021,c2022,d2023}') > cr.tex.indexOf('Sub text'), 'papers in claims, with other words or several in one, are cited together at the end of the section (after its subsections)');
 ok(cr.tex.split('\\cite{e2024}').length === 2 && cr.tex.includes('Sub text \\cite{e2024}'), 'a key that the text of the subsection cites already is not added again');
 ok(/Only this\.\n%% apg cite:c4 [^\n]*\n\\cite\{f2025\}/.test(cr.tex), 'when a paragraph ends the section the \\cite follows it in the same paragraph');
-ok([...cr.cites].sort().join() === 'a2020,b2021,c2022,d2023,e2024,f2025' && cr.warnings.some(w => w.text === 'Unknown citation key e2024') && !L.toLatex(cdoc, { template: '{{body}}' }).tex.includes('\\cite{} '), 'they count as cited: they are collected for the .bib and unknown keys are reported');
+ok([...cr.cites].sort().join() === 'a2020,b2021,c2022,d2023,e2024,f2025' && cr.warnings.some(w => w.text.startsWith('Unknown citation key e2024')) && !L.toLatex(cdoc, { template: '{{body}}' }).tex.includes('\\cite{} '), 'they count as cited: they are collected for the .bib and unknown keys are reported');
 ok(!L.toLatex(C.parse('<!-- archipelago v1 -->\n# A\n<!-- claim: [[x/@a2020|@a2020]] | id=c1 -->\n![cap](x.png)\n'), { template: '{{body}}', figurePath: p => p }).tex.includes('\\cite{a2020}'), 'the claim of a figure is its caption, not a place for a citation');
 
 const rdoc = C.parse(`<!-- archipelago v1 -->
@@ -172,5 +172,14 @@ if (hasTeX) for (const t of L.BUILTIN) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+ok(L.toLatex(C.parse('<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\nSee [[Source/@smith2020|@smith2020x]].\n'), {}).tex.includes('\\cite{smith2020}'), 'a link to a literature note cites the note\'s key, not a mistyped alias');
+{
+  const d = C.parse('<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\n<!-- claim: Lifting Line [[@Fundamentals] | id=c1 -->\nSee [[Source/@known2020|@known2020]] and [@gone2021].\n');
+  const r = L.toLatex(d, { bibFiles: ['a'], bibKeys: new Set(['known2020']) });
+  const unk = r.warnings.filter(w => w.text.startsWith('Unknown citation key'));
+  ok(unk.length === 2 && unk.some(w => w.text.includes('Fundamentals (in "Lifting Line [[@Fundamentals]")') && w.key === 'c1') && unk.some(w => w.text.includes('gone2021') && w.key === 'c1'), 'an unknown citation key says which claim cites it and points at it', unk);
+  ok(r.warnings.some(w => w.text.startsWith('Unfinished link [[@Fundamentals]') && w.key === 'c1'), 'a link that ends with one ] is reported as unfinished', r.warnings);
+  ok(!L.toLatex(C.parse('<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\n<!-- claim: x | id=c1 -->\nA [[Note|alias]] and [[@k]] and [a] [b].\n'), { bibFiles: ['a'], bibKeys: new Set(['k']) }).warnings.some(w => w.text.startsWith('Unfinished')), 'finished links and plain brackets are not');
+}
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
