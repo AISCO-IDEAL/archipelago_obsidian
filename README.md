@@ -64,6 +64,6 @@ The document model and the LaTeX export and import (`src/core.js`, `latex.js`, `
 
 MIT © dieGurken
 
-## Conference templates
+## Installing pdflatex
 
-Tectonic is XeTeX. Templates whose style loads `times` (ICML, NeurIPS) need `\usepackage[T1]{fontenc}` before the style, else the PDF is set in Latin Modern instead of Times. Check with `pdffonts`: Nimbus Roman (Times), Type 1, embedded. Style files not in the bundle go beside the `.tex`.
+Debian/Ubuntu: `sudo apt-get install -y --no-install-recommends texlive-latex-base texlive-fonts-recommended`. `texlive-fonts-recommended` has the Times metrics that conference templates (ICML, NeurIPS) need. Avoid `texlive-latex-extra` (large, pulls in Java); put a single missing package such as `forloop.sty` (CTAN: unzip, `latex forloop.ins`) beside the `.tex` instead. Check with `pdflatex --version`.
