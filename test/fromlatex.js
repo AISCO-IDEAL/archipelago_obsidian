@@ -132,5 +132,15 @@ theirs = t.replace(/\n%% apg cite:c3[^\n]*\n\\cite\{p2020\}/, '').replace('First
 r = take(d, theirs);
 ok(para(d, 'c1').text === 'First paragraph [@p2020].' && !exp(d).includes('%% apg cite:c3'), 'moving it in the .tex into a paragraph puts the citation into that paragraph, and the automatic one goes', [para(d, 'c1').text, r.report]);
 
+console.log('blocks that are switched off');
+{
+  const src = '<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\n<!-- claim: first | id=c1 needs=c4 -->\nText of first.\n\n# Pool\n<!-- island: id=s2 x=300 y=0 -->\n<!-- claim: linked | id=c4 -->\nPulled text.\n\n<!-- claim: unlinked | id=c3 -->\nHidden text.\n';
+  const dd = C.parse(src); L.setFront(dd, 'inactive', 's2');
+  const base = exp(dd);
+  r = take(dd, base.replace('Pulled text.', 'Pulled text, edited in the .tex.'), base);
+  ok(para(dd, 'c4').text === 'Pulled text, edited in the .tex.' && para(dd, 'c3').text === 'Hidden text.', 'an edit of a claim that is shown below another one is taken over into its own paragraph', r.report);
+  r = take(dd, base.replace(/%% apg c4[^]*?(?=%% apg end)/, ''), base);
+  ok(para(dd, 'c3').text === 'Hidden text.' && para(dd, 'c1').text === 'Text of first.', 'what is not in the paper is not emptied by an outside edit', r.report);
+}
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

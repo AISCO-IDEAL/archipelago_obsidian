@@ -455,9 +455,10 @@
     const route = (target, from) => { if (!incoming.has(target)) incoming.set(target, []); incoming.get(target).push(sources.get(from)); routed.add(from); };
     for (const s of d.sections) for (const p of s.paragraphs) for (const n of p.needs) if (p.cid && n !== p.cid && sources.has(n)) route(p.cid, n);
     for (const n of d.unplaced) if (n.to && sources.has(n.cid)) route(n.to, n.cid);
+    const plan = C.plan(d);   // blocks that are switched off are not in the paper (core.js)
     d.sections.forEach((s, si) => {
-      const sk = s.sid || 's#' + (si + 1);
-      out.push({ key: sk, kind: 'section', tex: marker(sk) + '\n\\section{' + inline(C.trimmed(s.title), ctx) + '}' + (s.sid ? '\n\\label{sec:' + s.sid + '}' : '') });
+      const sk = s.sid || 's#' + (si + 1), secOff = plan.secOff.has(s.id);
+      if (!secOff) out.push({ key: sk, kind: 'section', tex: marker(sk) + '\n\\section{' + inline(C.trimmed(s.title), ctx) + '}' + (s.sid ? '\n\\label{sec:' + s.sid + '}' : '') });
       // Papers linked in a claim (not in the paragraph) are cited at the end of the subsection (or section) the claim is in:
       // `\cite{a,b}` after its last paragraph, to be moved to the right place in the text later. Keys cited in the text of that
       // subsection already are left out.
@@ -484,9 +485,17 @@
       const linked = id => {
         for (const src of incoming.get(id) || []) { src.keys.forEach(k => ctx.cites.add(k)); boxes[boxes.length - 1].claims.push(src); }
       };
-      linked(s.sid);
+      if (!secOff) linked(s.sid);
       const open = [];   // the levels of the open subsections, to see a level that is skipped
+      // the claims of islands that are off that a claim here needs: their paragraphs follow it
+      const addPulled = p => {
+        for (const q of plan.pulled.get(p.id) || []) {
+          if (C.trimmed(q.text) === '') continue;
+          out.push({ key: q.cid, kind: 'prose', tex: marker(q.cid, q.claim) + '\n' + proseText(q.text, ctx), cites: citesIn(q.text) });
+        }
+      };
       s.paragraphs.forEach((p, pi) => {
+        if (plan.hidden.has(p.id)) return;
         const k = C.kind(p), key = p.cid || `${sk}/${pi + 1}`;
         if (k === 'groupEnd') { while (open.length && open[open.length - 1] >= C.level(p)) open.pop(); closeTo(C.level(p)); return; }
         let tex;
@@ -499,6 +508,7 @@
           open.push(lvl);
           tex = SECTIONING[lvl - 2] + '{' + inline(C.groupName(p), ctx) + '}' + (p.cid ? '\n\\label{sec:' + p.cid + '}' : '');
           out.push({ key, kind: k, tex: marker(key, p.claim) + '\n' + tex });
+          addPulled(p);
           boxes[boxes.length - 1].nested = true;
           boxes.push({ level: lvl, claims: [], start: out.length, cid: p.cid });
           claimOf(p);   // the claim a subsection was expanded from belongs to the subsection
@@ -510,9 +520,10 @@
         if (k === 'figure') tex = figureBlock(p, key, ctx);
         else if (k === 'table') tex = tableBlock(p, key, ctx);
         else if (k === 'equation') tex = equationBlock(p, key);
-        else if (C.trimmed(p.text) === '') return;   // a claim without prose yet is not in the paper
+        else if (C.trimmed(p.text) === '') { addPulled(p); return; }   // a claim without prose yet is not in the paper
         else tex = proseText(p.text, ctx);
         out.push({ key, kind: k, tex: marker(key, p.claim) + '\n' + tex, cites: k === 'prose' ? citesIn(p.text) : [] });
+        addPulled(p);
       });
       closeTo(2);
       flush(boxes[0]);

@@ -1072,6 +1072,33 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await ev('T.ui().ungroup()');
       await settle();
       ok(!nestDisk().includes('Temp subsection') && Core.check(nestDisk()).length === 0, 'Ctrl+Shift+G on a selected subsection removes it (its contents stay)');
+      // the switch of a block: an island (or a free-floating block) that is off is not in the paper
+      const bgIsland = () => `T.qa('.island').find(i => i.querySelector('.head').textContent.includes('Background'))`;
+      ok(await ev(`T.qa('.island').every(i => !!i.querySelector('.head .bsw.on'))`) && await ev(`T.qa('.card.block').every(c => !!c.querySelector('.bsw.on'))`), 'every island and every free-floating block has a switch, on at first');
+      const c10text = (await ev('T.para("c10").text')).slice(0, 30);
+      await ev(`${bgIsland()}.querySelector('.bsw').click()`);
+      await settle();
+      ok(/^inactive: .*s3/m.test(nestDisk()) && await ev(`${bgIsland()}.classList.contains('off')`) && Core.check(nestDisk()).length === 0, 'switching an island off is saved in the front matter and dims it', nestDisk().match(/^inactive:.*$/m));
+      ok(await ev(`T.qa('.card.pulled').some(c => c.textContent.includes('A signed distance function'))`), 'the claim that a claim of an island that is on needs is marked as shown');
+      let tex = await ev('T.ui().latexText()');
+      ok(!tex.includes('\\section{Background}') && !tex.includes('%% apg c13') && !tex.includes('%% apg c14') && tex.includes('%% apg c10 ') && tex.includes('%% apg c11 ') && tex.includes(c10text) && tex.indexOf(c10text) > tex.indexOf('%% apg c15 ') && tex.indexOf('%% apg c11 ') > tex.indexOf('%% apg c27 '), 'the LaTeX has no section for it, the claims that are not needed are left out, and the ones that are needed (c10 by c15, c11 by c27) follow the claim that needs them', tex.match(/%% apg c1[0-4] /g));
+      await ev('T.ui().setLevel("prose")'); await waitFor('!!T.q("#prose")');
+      ok(!(await ev(`T.qa('.sechead input').map(i => i.value).join()`)).includes('Background') && (await ev(`T.qa('.sechead input').map(i => i.value).join()`)).includes('Method'), 'Prose does not show the island that is off');
+      ok(await ev(`T.qa('.prow.pulled').length === 2 && T.qa('.prow.pulled .pulled-from').every(e => e.textContent.includes('Background'))`) && await ev(`(() => { const r = T.qa('.prow.pulled').find(x => x.dataset.id === T.para('c10').id), prev = r && r.previousElementSibling; return !!prev && prev.textContent.includes('Constraints are expressed'); })()`), 'the claims that are needed are in Prose below the claim that needs them, with where they come from', await ev(`T.qa('.prow.pulled').length`));
+      await ev('T.ui().setLevel("map")'); await waitFor('!!T.q("#map")');
+      await ev(`${bgIsland()}.querySelector('.bsw').click()`);
+      await settle();
+      ok(!/^inactive:/m.test(nestDisk()) && !(await ev(`${bgIsland()}.classList.contains('off')`)), 'switching it on again removes the entry');
+      const blockCard = await ev(`T.qa('.card.block').map(c => c.textContent.trim().slice(0, 20))[0]`);
+      await ev(`T.qa('.card.block')[0].querySelector('.bsw').click()`);
+      await settle();
+      ok(/^inactive: c\d+/m.test(nestDisk()) && await ev(`T.qa('.card.block')[0].classList.contains('off')`), 'a free-floating block has its own switch');
+      await ev('T.ui().setLevel("prose")'); await waitFor('!!T.q("#prose")');
+      ok(!(await ev(`T.qa('.prow').map(r => r.textContent).join('|')`)).includes(blockCard || '\u0000'), 'and when it is off it is not in Prose');
+      await ev('T.ui().setLevel("map")'); await waitFor('!!T.q("#map")');
+      await ev(`T.qa('.card.block')[0].querySelector('.bsw').click()`);
+      await settle();
+      ok(!/^inactive:/m.test(nestDisk()), 'and back on');
       // text styles on the map: the whole claim, from the menu of its card and with Ctrl+B
       const c4m = await ev(`T.card('We contribute a projection layer')`);
       await click(c4m.x, c4m.y);

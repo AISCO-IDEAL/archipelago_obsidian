@@ -329,3 +329,18 @@ button { cursor: default; box-shadow: none; }
 .autosync .mins { color: var(--secondary); font-size: 11px; white-space: nowrap; }
 .autosync .chip { font: inherit; color: inherit; background: none; border: 1px solid var(--hairline); border-radius: 5px; padding: 0 5px; margin-left: 3px; cursor: pointer; }
 .autosync .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* the switch of a block (island or figure, table, equation): in the paper or not */
+.bsw { flex: none; width: 26px; height: 15px; margin-left: auto; padding: 0; border: 0; border-radius: 8px; background: var(--tertiary); position: relative; cursor: pointer; opacity: 0; transition: opacity 0.12s; }
+/* hidden until the pointer is over the island or card (what is off shows by being dimmed) */
+.island:hover > .head .bsw, .card:hover > .bsw { opacity: 0.75; }
+.island .head .bsw:hover, .card .bsw:hover { opacity: 1; }
+.bsw i { position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: #fff; transition: left 0.12s; }
+.bsw.on { background: var(--accent); }
+.bsw.on i { left: 13px; }
+.card .bsw { position: absolute; top: 5px; right: 5px; margin: 0; z-index: 2; }
+.island.off, .card.off { opacity: 0.5; }
+.island.off .head .title { text-decoration: line-through; text-decoration-color: var(--tertiary); }
+.card.pulled { opacity: 1; border-left: 3px solid var(--accent); }
+.mnote .pulled-from { font-size: 9px; font-weight: 600; letter-spacing: 0.4px; color: var(--tertiary); }
+.prow.pulled .hl { background: rgba(var(--hue), 0.05); }

@@ -181,5 +181,31 @@ ok(L.toLatex(C.parse('<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -
   ok(r.warnings.some(w => w.text.startsWith('Unfinished link [[@Fundamentals]') && w.key === 'c1'), 'a link that ends with one ] is reported as unfinished', r.warnings);
   ok(!L.toLatex(C.parse('<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\n<!-- claim: x | id=c1 -->\nA [[Note|alias]] and [[@k]] and [a] [b].\n'), { bibFiles: ['a'], bibKeys: new Set(['k']) }).warnings.some(w => w.text.startsWith('Unfinished')), 'finished links and plain brackets are not');
 }
+console.log('blocks that are switched off');
+{
+  const src = '<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\n<!-- claim: first | id=c1 needs=c4,c5 -->\nText of first.\n\n<!-- claim: second | id=c2 -->\nText of second.\n\n# Pool\n<!-- island: id=s2 x=300 y=0 -->\n<!-- claim: linked claim | id=c4 -->\nPulled text.\n\n<!-- claim: unlinked | id=c3 -->\nHidden text.\n\n<!-- claim: also linked | id=c5 -->\n\n# C\n<!-- island: id=s3 x=600 y=0 -->\n<!-- claim: third | id=c6 -->\nText of third.\n\n<!-- claim: Fig | id=c7 pos=10,10 -->\n![F](f.png)\n';
+  const mk = off => { const d = C.parse(src); if (off) L.setFront(d, 'inactive', off); return d; };
+  const all = L.toLatex(mk(''), {}).tex;
+  ok(all.includes('Hidden text.') && all.includes('\\section{Pool}') && all.includes('![') === false, 'everything is in the paper while nothing is off');
+  const r = L.toLatex(mk('s2'), {}), t = r.tex;
+  ok(!t.includes('\\section{Pool}') && !t.includes('Hidden text.') && t.includes('\\section{C}'), 'an island that is off is not in the LaTeX', t.match(/\\section\{[^}]*\}/g));
+  ok(t.indexOf('Text of first.') < t.indexOf('Pulled text.') && t.indexOf('Pulled text.') < t.indexOf('Text of second.') && /%% apg c4 /.test(t), 'a claim of it that an active claim needs follows that claim', t);
+  ok(C.numbering(mk('s2')).sections.get(C.parse(src).sections[2].id) === undefined && [...C.numbering(mk('s2')).sections.values()].join() === '1,2', 'and it has no section number');
+  const f = L.toLatex(mk('c7'), {}).tex;
+  ok(!f.includes('\\begin{figure}') && L.toLatex(mk(''), {}).tex.includes('\\begin{figure}'), 'a free-floating block that is off is not in the LaTeX either');
+  const pl = C.plan(mk('s2'));
+  ok(pl.pulled.size === 1 && [...pl.pulled.values()][0].map(q => q.cid).join() === 'c4,c5' && pl.hidden.size === 3, 'the plan says which paragraphs are shown where', [pl.pulled.size, pl.hidden.size]);
+  {
+    // a claim of an island that is off that depends on a claim of an island that is on is shown below that claim too
+    const rev = C.parse('<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\n<!-- claim: active | id=c1 -->\nActive text.\n\n# Pool\n<!-- island: id=s2 x=300 y=0 -->\n<!-- claim: depends on active | id=c2 needs=c1 -->\nDependent text.\n\n<!-- claim: unlinked | id=c3 -->\nHidden text.\n');
+    L.setFront(rev, 'inactive', 's2');
+    const tt = L.toLatex(rev, {}).tex;
+    ok(tt.includes('Dependent text.') && tt.indexOf('Dependent text.') > tt.indexOf('Active text.') && !tt.includes('Hidden text.'), 'a claim of an island that is off that depends on an active claim follows it, an unlinked one is left out', tt);
+    const plr = C.plan(rev);
+    ok([...plr.pulled.values()][0].map(q => q.cid).join() === 'c2', 'the plan shows it below the claim it depends on');
+  }
+  ok(C.serialize(mk('s2')).includes('inactive: s2') && C.serialize(C.parse(C.serialize(mk('s2')))) === C.serialize(mk('s2')), 'the switch is saved in the front matter and comes back');
+  ok(L.toLatex(mk('s2'), {}).tex === L.toLatex(C.parse(C.serialize(mk('s2'))), {}).tex, 'the LaTeX is the same after saving and reading');
+}
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

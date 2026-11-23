@@ -14,6 +14,7 @@ Write a paper in Obsidian twice over: as a **map** of claims and arguments, and 
 ## Features
 
 - **Map:** islands (sections), claim cards, links (`needs`), notes, nested subsections down to LaTeX's depth, and figure, table and equation cards. Click the label of a subsection to select it: Delete removes it with its contents, Ctrl+Shift+G removes only the subsection and keeps its contents, a double click renames it.
+- **Blocks in or out of the paper:** every island and every free-floating figure, table or equation has a switch. One that is off is not in Prose or in the LaTeX, and not in the section numbers. Of an island that is off, only the claims that a claim of a block that is on depends on (`needs`) stay, each below the claim that needs it (in Prose marked with where it comes from; in the LaTeX as a paragraph after it). The switches are saved in the note's front matter (`inactive: s2, c10`), so every plugin version leaves them alone, and what is off is never emptied by an edit of the `.tex`.
 - **Images:** drop image files on the Map, or paste them (Ctrl+V; a screenshot, an image copied from a browser) on the Map or in Prose. They go into the document's `figures/`. A clipboard with text pastes the text.
 - **Prose:** the text of each claim. Numbered headings, styles (bold, italic, strikethrough, highlight, colour, comment) via the context menu or shortcuts, link suggestions.
 - **LaTeX / PDF:**

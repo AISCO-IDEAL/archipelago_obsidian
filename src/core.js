@@ -167,19 +167,74 @@
   /** The numbers LaTeX gives the headings: { sections: Map(section id -> '2'), headings: Map(heading paragraph id -> '2.1.3') }. A skipped
    *  level counts as 0, as in LaTeX. */
   function numbering(d) {
-    const sections = new Map(), headings = new Map();
-    d.sections.forEach((s, i) => {
-      sections.set(s.id, String(i + 1));
+    const sections = new Map(), headings = new Map(), pl = plan(d);
+    let n = 0;
+    d.sections.forEach(s => {
+      if (pl.secOff.has(s.id)) return;   // a block that is switched off has no number: it is not in the paper
+      n++;
+      sections.set(s.id, String(n));
       const c = [0, 0, 0, 0, 0, 0];
       for (const p of s.paragraphs) {
         if (kind(p) !== 'group') continue;
         const l = level(p);
         c[l]++;
         for (let k = l + 1; k <= MAX_LEVEL; k++) c[k] = 0;
-        headings.set(p.id, [i + 1, ...c.slice(2, l + 1)].join('.'));
+        headings.set(p.id, [n, ...c.slice(2, l + 1)].join('.'));
       }
     });
     return { sections, headings };
+  }
+
+  // ---- blocks that are switched off ----
+  // Every block of the Map (an island, or a free-floating figure, table or equation) has a switch. One that is off is not in
+  // the paper: not in Prose, not in the LaTeX. The ids of the ones that are off are in the front matter, `inactive: s4, c10`
+  // (so that a plugin that does not know the switch leaves them alone). Of an island that is off, only the claims that a claim
+  // of a block that is on is linked to (either depends on the other, `needs`) are shown, each below the claim it is linked to.
+
+  /** The ids (of islands and blocks) that are switched off. */
+  function inactiveIds(d) {
+    const fl = d.frontLines || [];
+    for (let k = 1; k < fl.length - 1; k++) {
+      const m = fl[k].match(/^inactive:\s*(.*)$/);
+      if (m) return new Set(m[1].replace(/^(["'])(.*)\1$/, '$2').split(/[\s,]+/).filter(Boolean));
+    }
+    return new Set();
+  }
+
+  /** What the paper shows. Returns { off (ids), secOff (ids of the islands that are off), hidden (ids of the paragraphs that are
+   *  not shown where they are), pulled (id of a paragraph -> the paragraphs of islands that are off that are shown below it) }. */
+  function plan(d) {
+    const off = inactiveIds(d), hidden = new Set(), secOff = new Set(), pulled = new Map(), where = new Map();
+    for (const s of d.sections) for (const p of s.paragraphs) if (p.cid) where.set(p.cid, { p, s });
+    for (const s of d.sections) {
+      const sOff = !!s.sid && off.has(s.sid);
+      if (sOff) secOff.add(s.id);
+      for (const p of s.paragraphs) {
+        if (isBlock(p)) { if (p.cid && off.has(p.cid)) hidden.add(p.id); }   // a block has a switch of its own
+        else if (sOff) hidden.add(p.id);
+      }
+    }
+    if (secOff.size) {
+      // the claims of the islands that are off that depend on a claim (cid -> them), in the order of the document
+      const dependents = new Map();
+      for (const s of d.sections) if (secOff.has(s.id)) for (const q of s.paragraphs) {
+        if (!isCard(q)) continue;
+        for (const n of q.needs) { if (!dependents.has(n)) dependents.set(n, []); dependents.get(n).push(q); }
+      }
+      const shown = new Set();   // each claim of an island that is off is shown once, below the first claim it is linked to
+      for (const s of d.sections) for (const p of s.paragraphs) {
+        if (hidden.has(p.id) || isBlock(p) || !p.cid && !p.needs.length) continue;
+        // what this claim needs, then what needs this claim
+        const linked = [...p.needs.map(n => (where.get(n) || {}).p), ...(dependents.get(p.cid) || [])];
+        for (const q of linked) {
+          if (!q || q === p || !hidden.has(q.id) || !isCard(q) || shown.has(q.id)) continue;
+          shown.add(q.id);
+          if (!pulled.has(p.id)) pulled.set(p.id, []);
+          pulled.get(p.id).push(q);
+        }
+      }
+    }
+    return { off, hidden, secOff, pulled };
   }
   /** Drop end markers that close nothing or sit right before another marker or the section end. */
   function normalizeGroups(s) {
@@ -878,7 +933,7 @@
   return {
     uid, trimmed, oneLine, eq, newParagraph, newSection, newIdea, newDoc,
     kind, isBlock, isMarker, isCard, groupName, setGroupName, figure, tableRows, equation,
-    groupOf, groupAt, endOfGroup, normalizeGroups, numbering, endGroup, endMarker, level, withLevel, openAt, pathOf, subtreeEnd, shiftLevels, depthBelow, MAX_LEVEL,
+    groupOf, groupAt, endOfGroup, normalizeGroups, numbering, plan, inactiveIds, endGroup, endMarker, level, withLevel, openAt, pathOf, subtreeEnd, shiftLevels, depthBelow, MAX_LEVEL,
     parse, serialize, repair, check, assignIDs, isDocument, isFormatLine,
     lcsPairs, merge3Lines, mergeDocs, closestBase, joinSegments, renameIds, idsIn, dropDangling, fixDuplicateIds, fenceAfter,
   };

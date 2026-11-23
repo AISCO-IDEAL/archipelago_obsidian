@@ -1445,7 +1445,45 @@ function buildMap(main) {
   resizeObs.observe(mapEl);
 }
 
+// ---- the switch of a block: in the paper or not ----
+
+let mapPlan = null;   // what the paper shows (core.js `plan`), made at every render of the Map
+
+/** The id the front matter keeps a block under: the island's `s…`, or the free-floating block's `c…`. */
+function switchId(id, create) {
+  if (create) C.assignIDs(S.doc);   // an island or block that has no id yet gets one, to be kept under
+  const s = section(id);
+  if (s) return s.sid;
+  const p = paragraph(id);
+  return p ? p.cid : '';
+}
+const isOn = id => { const k = switchId(id); return !k || !C.inactiveIds(S.doc).has(k); };
+
+/** Put an island or a free-floating block into the paper, or leave it out (Prose and LaTeX do not show it). */
+function setOn(id, on) {
+  act(() => {
+    const k = switchId(id, true);
+    if (!k) return;
+    const off = C.inactiveIds(S.doc);
+    if (on) off.delete(k); else off.add(k);
+    // only ids that are there still
+    const live = new Set([...S.doc.sections.flatMap(s => [s.sid, ...s.paragraphs.map(p => p.cid)])]);
+    Latex.setFront(S.doc, 'inactive', [...off].filter(x => live.has(x)).join(', '));
+  });
+}
+
+/** The switch of an island or block. */
+function switchEl(id) {
+  const on = isOn(id);
+  const b = h('button', { class: 'bsw' + (on ? ' on' : ''), role: 'switch', 'aria-checked': String(on),
+    title: on ? 'In the paper. Click to leave it out of Prose and LaTeX (claims that a claim in the paper needs stay, below it).' : 'Not in the paper. Click to put it back.' }, h('i'));
+  b.addEventListener('click', e => { e.stopPropagation(); setOn(id, !isOn(id)); });
+  b.addEventListener('dblclick', e => e.stopPropagation());
+  return b;
+}
+
 function renderMap(main) {
+  mapPlan = C.plan(S.doc);
   if (!mapEl || !mapEl.isConnected) buildMap(main);
   cardEls.clear(); islandEls.clear(); regionEls.clear();
   worldA.replaceChildren(...S.doc.sections.map((s, i) => islandEl(s, i)));
@@ -1478,6 +1516,8 @@ function islandEl(s, i) {
   } else {
     head.append(h('div', { class: 'title', title: 'Double-click to rename' }, s.title || 'Untitled'));
   }
+  head.append(switchEl(id));
+  if (mapPlan && mapPlan.secOff.has(id)) el.classList.add('off');
   el.append(head);
   for (const p of s.paragraphs) {
     if (C.kind(p) !== 'group') continue;
@@ -1561,6 +1601,11 @@ function cardEl(id, text, hueStr, para) {
   const el = h('div', { class: 'card ' + (isPara ? (isBlock ? 'block' : 'claim') : 'idea'), data: { id }, style: { '--hue': hueStr } });
   if (!isPara) el.append(h('div', { class: 'idea-label' }, 'UNPLACED IDEA'));
   if (isBlock) el.append(blockThumb(para));
+  if (isBlock) el.append(switchEl(id));
+  if (isPara && mapPlan) {
+    if (mapPlan.hidden.has(id)) el.classList.add('off');
+    for (const list of mapPlan.pulled.values()) if (list.includes(para)) { el.classList.add('pulled'); el.title = 'Its block is off. It is in the paper below the claim that needs it.'; }
+  }
   const row = h('div', { class: 'row' });
   if (S.editing === id) {
     const ta = h('textarea', { rows: 1, placeholder: '(no claim)', value: text, data: { key: 'claim:' + id, autofocus: '' } });
@@ -2293,21 +2338,61 @@ function renderProse(main) {
   S.doc.sections.forEach((s, i) => { for (const p of s.paragraphs) if (p.cid) deps.set(p.cid, [p.id, i]); });
 
   const numbers = C.numbering(S.doc);   // 1, 1.1, 1.1.1 … as LaTeX numbers them
+  const pl = C.plan(S.doc);             // what is not shown (blocks that are switched off), and what is shown below another claim
+  // The claim in the left margin, right-aligned toward the text, with one dot per dependency. `o.from`: the title of the block
+  // that is off, when this claim is shown here because the claim above it needs it.
+  const claimRow = (p, o) => {
+    const id = p.id, kind = C.kind(p), sid = o.sid;
+    const claimField = lineField('', p.claim, 'add claim', v => change(() => { const q = paragraph(id); if (q) q.claim = v; }));
+    claimField.dataset.key = 'claim:' + id;
+    styleable(claimField);
+    if (S.focusClaim === id) claimField.dataset.autofocus = 'end';
+    // Enter ends the claim and goes on to the paragraph
+    claimField.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      const t = shadow.querySelector(`.prow[data-id="${id}"] .pedit`);
+      if (t) { e.preventDefault(); t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+    });
+    const note = h('div', { class: 'mnote' }, o.from != null && h('div', { class: 'pulled-from', title: 'Shown here because the claim above needs it. Its block is switched off, so it is not in the paper anywhere else.' }, '↳ from ' + (o.from || 'a block')), richClaim(claimField));
+    const dots = p.needs.filter(cid => deps.has(cid)).map(cid => {
+      const [did, si] = deps.get(cid);
+      const d = h('b', { title: 'Depends on ' + cid, style: { '--hue': hue(si) } });
+      d.addEventListener('mouseenter', () => setHighlight(did));
+      d.addEventListener('mouseleave', () => { if (S.highlight === did) setHighlight(null); });
+      d.addEventListener('click', () => {
+        const r = shadow.querySelector(`.prow[data-id="${did}"]`);
+        if (r) r.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+      return d;
+    });
+    if (dots.length) note.append(h('div', { class: 'dots' }, dots));
+    const row = h('div', { class: 'prow' + (o.rail ? ' rail' : '') + (o.from != null ? ' pulled' : ''), data: { id, sec: sid }, style: { '--hue': o.hu, '--depth': o.depth } },
+      h('div', { class: 'hl' }, ), note, proseBlock(p, kind, sid));
+    if (o.from == null) {
+      note.append(h('div', { class: 'padd-tools' },
+        C.isCard(p) && h('button', { class: 'padd-after', title: 'Expand this claim into a subsection', onclick: () => expandClaim(id) }, '↳'),
+        h('button', { class: 'padd-after', title: 'New claim below', onclick: () => addProseClaim(sid, id) }, '+')));
+    }
+    return row;
+  };
+
   const inner = h('div', { class: 'inner' });
   inner.append(h('div', { class: 'top' },
     lineField('ptitle', S.doc.title, 'Untitled paper', v => change(() => { S.doc.title = v; })),
     lineField('pthesis', S.doc.thesis, 'One sentence for the whole paper', v => change(() => { S.doc.thesis = v; }))));
 
   S.doc.sections.forEach((s, i) => {
-    const sid = s.id, hu = hue(i);
-    const title = h('input', { value: s.title, placeholder: 'Section title' });
-    if (S.focusSection === sid) title.dataset.autofocus = 'select';
-    title.addEventListener('input', () => change(() => { const q = section(sid); if (q) q.title = title.value; }));
-    inner.append(h('div', { class: 'sechead', data: { id: sid, sec: sid }, style: { '--hue': hu } }, h('i'), h('span', { class: 'num' }, numbers.sections.get(sid)), title));
+    const sid = s.id, hu = hue(i), secOff = pl.secOff.has(sid);
+    if (!secOff) {
+      const title = h('input', { value: s.title, placeholder: 'Section title' });
+      if (S.focusSection === sid) title.dataset.autofocus = 'select';
+      title.addEventListener('input', () => change(() => { const q = section(sid); if (q) q.title = title.value; }));
+      inner.append(h('div', { class: 'sechead', data: { id: sid, sec: sid }, style: { '--hue': hu } }, h('i'), h('span', { class: 'num' }, numbers.sections.get(sid)), title));
+    }
     const of = C.groupOf(s), path = C.pathOf(s);
     s.paragraphs.forEach((p, k) => {
       const kind = C.kind(p), id = p.id, depth = Math.max(0, path[k].length - 1);
-      if (kind === 'groupEnd') return;
+      if (kind === 'groupEnd' || pl.hidden.has(id)) return;
       if (kind === 'group') {
         // The title in the paper, and at the top of the rail the same title in small caps (both editable), or, for a subsection
         // that was expanded from a claim, that claim (with its dependency dots). Deeper subsections are indented.
@@ -2332,38 +2417,14 @@ function renderProse(main) {
         inner.append(h('div', { class: 'ghead rail', data: { id, sec: sid }, style: { '--hue': hu, '--depth': depth, '--level': C.level(p) } }, a, h('i'), num, b, del));
         return;
       }
-      // The claim in the left margin, right-aligned toward the text, with one dot per dependency.
-      const claimField = lineField('', p.claim, 'add claim', v => change(() => { const q = paragraph(id); if (q) q.claim = v; }));
-      claimField.dataset.key = 'claim:' + id;
-      styleable(claimField);
-      if (S.focusClaim === id) claimField.dataset.autofocus = 'end';
-      // Enter ends the claim and goes on to the paragraph
-      claimField.addEventListener('keydown', e => {
-        if (e.key !== 'Enter' || e.isComposing) return;
-        const t = shadow.querySelector(`.prow[data-id="${id}"] .pedit`);
-        if (t) { e.preventDefault(); t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
-      });
-      const note = h('div', { class: 'mnote' }, richClaim(claimField));
-      const dots = p.needs.filter(cid => deps.has(cid)).map(cid => {
-        const [did, si] = deps.get(cid);
-        const d = h('b', { title: 'Depends on ' + cid, style: { '--hue': hue(si) } });
-        d.addEventListener('mouseenter', () => setHighlight(did));
-        d.addEventListener('mouseleave', () => { if (S.highlight === did) setHighlight(null); });
-        d.addEventListener('click', () => {
-          const r = shadow.querySelector(`.prow[data-id="${did}"]`);
-          if (r) r.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        });
-        return d;
-      });
-      if (dots.length) note.append(h('div', { class: 'dots' }, dots));
-      inner.append(h('div', { class: 'prow' + (of[k] ? ' rail' : ''), data: { id, sec: sid }, style: { '--hue': hu, '--depth': depth } },
-        h('div', { class: 'hl' }, ), note, proseBlock(p, kind, sid)));
-      const tools = h('div', { class: 'padd-tools' },
-        C.isCard(p) && h('button', { class: 'padd-after', title: 'Expand this claim into a subsection', onclick: () => expandClaim(id) }, '↳'),
-        h('button', { class: 'padd-after', title: 'New claim below', onclick: () => addProseClaim(sid, id) }, '+'));
-      inner.lastChild.querySelector('.mnote').append(tools);
+      inner.append(claimRow(p, { sid, hu, rail: !!of[k], depth }));
+      // the claims of a block that is off that this claim needs, below it
+      for (const q of pl.pulled.get(p.id) || []) {
+        const qs = S.doc.sections.find(x => x.paragraphs.includes(q));
+        inner.append(claimRow(q, { sid: qs.id, hu: hue(S.doc.sections.indexOf(qs)), rail: false, depth: 0, from: qs.title }));
+      }
     });
-    inner.append(h('div', { class: 'padd', data: { sec: sid } }, h('button', { title: 'Add a claim with its paragraph to this section', onclick: () => addProseClaim(sid, null) }, '+ Add claim')));
+    if (!secOff) inner.append(h('div', { class: 'padd', data: { sec: sid } }, h('button', { title: 'Add a claim with its paragraph to this section', onclick: () => addProseClaim(sid, null) }, '+ Add claim')));
   });
   inner.append(h('div', { class: 'padd sec' }, h('button', { title: 'Add a section', onclick: addProseSection }, '+ Add section')));
   sc.replaceChildren(h('div', { class: 'sheet' }, inner));
