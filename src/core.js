@@ -506,10 +506,15 @@
       const s = comment(ls[j], 'synopsis');
       if (s !== null) { syn = s; j += 1; continue; }
       const isl = comment(ls[j], 'island'), kv = isl !== null ? tokens(isl) : null;
-      if (kv) { island = point(`${kv.x ?? ''},${kv.y ?? ''}`); sid = kv.id ?? ''; j += 1; continue; }
+      if (kv) {
+        // A second island line (two edits that were merged) must not win over the first, which is the one that is rewritten
+        // when the island moves: it would put the island back where it was. Only the first is kept.
+        if (island === null && !sid) { island = point(`${kv.x ?? ''},${kv.y ?? ''}`); sid = kv.id ?? ''; } else dropped.push(j);
+        j += 1; continue;
+      }
       break;
     }
-    const header = ls.slice(0, j);
+    const header = ls.slice(0, j).filter((_, k) => !dropped.includes(k));
     const paras = [];
     while (j < ls.length) {
       const p = newParagraph({ trailing: [] });
@@ -561,6 +566,7 @@
     if (kind(p) === 'group') {
       // the heading, then the subsection comment when it came from a claim
       r.push(p.text);
+    const dropped = [];   // indexes of island lines after the first
       if (p.origClaimLine !== null && eq(metaOf(p), p.orig)) r.push(p.origClaimLine);
       else if (p.origClaimLine !== null || p.claim || p.cid) r.push(claimLine(metaOf(p), 'subsection'));
       return r.concat(p.trailing);
