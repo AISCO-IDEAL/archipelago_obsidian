@@ -73,6 +73,23 @@ r = body('<!-- claim: F | id=c4 -->\n![A *fig*](figs/x.svg)\n', { figurePath: p 
 ok(r.tex.includes('\\fbox') && r.warnings.some(w => w.key === 'c4' && w.text.includes('.svg')), 'an SVG cannot go into pdflatex: a box, and a warning');
 r = body('<!-- claim: F | id=c5 -->\n![cap](gone.png)\n', { figurePath: () => null });
 ok(r.warnings.some(w => w.key === 'c5' && w.text.includes('Missing image')), 'a missing image is reported');
+
+const png = (w, ppm) => {
+  const chunk = (type, data) => { const b = Buffer.alloc(12 + data.length); b.writeUInt32BE(data.length, 0); b.write(type, 4, 'latin1'); data.copy(b, 8); return b; };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(10, 4);
+  const parts = [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr)];
+  if (ppm) { const phys = Buffer.alloc(9); phys.writeUInt32BE(ppm, 0); phys.writeUInt32BE(ppm, 4); phys[8] = 1; parts.push(chunk('pHYs', phys)); }
+  return Buffer.concat([...parts, chunk('IEND', Buffer.alloc(0))]);
+};
+ok(Math.abs(L.imageWidthIn(png(2025, 11811), 'png') - 6.75) < 0.01, 'a PNG with a resolution has a physical width', L.imageWidthIn(png(2025, 11811), 'png'));
+ok(L.imageWidthIn(png(2025, 0), 'png') === null, 'a PNG without a resolution has no physical width');
+ok(Math.abs(L.imageWidthIn(Buffer.from('%PDF-1.4\n1 0 obj << /Type /Page /MediaBox [ 0 0 234 187.2 ] >>', 'latin1'), 'pdf') - 3.25) < 1e-9, 'a PDF is as wide as its page');
+ok(L.imageWidthIn(Buffer.from('xx'), 'jpg') === null, 'other formats have no known width');
+const fig = w => body('<!-- claim: F | id=c8 -->\n![cap](f.pdf)\n', { figurePath: p => p, figureWidthIn: () => w }).tex;
+ok(fig(6.75).includes('\\begin{figure*}[htbp]') && fig(6.75).includes('\\includegraphics{f.pdf}') && fig(6.75).includes('\\end{figure*}'), 'a page-wide image spans both columns at its own size', fig(6.75));
+ok(fig(3.25).includes('\\begin{figure}[htbp]') && fig(3.25).includes('\\includegraphics{f.pdf}'), 'a column-wide image keeps its own size', fig(3.25));
+ok(fig(null).includes('\\begin{figure}[htbp]') && fig(null).includes('width=0.85\\linewidth'), 'an image of unknown size is fitted into the column', fig(null));
+ok(fig(20).includes('\\begin{figure}[htbp]') && fig(20).includes('width=0.85\\linewidth'), 'an image wider than the page (a screenshot) is fitted into the column', fig(20));
 r = body('<!-- claim: Only a claim | id=c6 -->\n\n<!-- claim: B | id=c7 -->\nText [@k].\n', { bibFiles: ['refs'], bibKeys: new Set() });
 ok(!r.tex.includes('c6'), 'a claim without prose is not in the paper');
 ok(r.warnings.some(w => w.text.startsWith('Unknown citation key k ') && w.key === 'c7'), 'an unknown key is reported');

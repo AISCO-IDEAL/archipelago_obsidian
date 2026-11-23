@@ -2509,7 +2509,7 @@ function latexResult() {
   const key = [currentText(), t.name, t.text, info ? info.bibFiles.join(',') + '|' + [...known].join(',') : ''].join('\0');
   if (latexCache.key === key) return latexCache.value;
   const value = Latex.toLatex(S.doc, {
-    template: t.text, figurePath: host.latex ? host.latex.figurePath : null,
+    template: t.text, figurePath: host.latex ? host.latex.figurePath : null, figureWidthIn: host.latex ? host.latex.figureWidthIn : null,
     bibFiles: info ? info.bibFiles : [], bibKeys: known,
   });
   latexCache = { key, value };
@@ -2621,7 +2621,7 @@ async function installEngine() {
 /** Take the edits of `theirs` (a .tex) over into the document, as one undo step; `base`: the .tex as last written, or null. */
 const exportOpts = () => {
   const info = S.tex.info;
-  return { template: templateOf().text, figurePath: host.latex.figurePath, bibFiles: info ? info.bibFiles : [], bibKeys: knownKeys() };
+  return { template: templateOf().text, figurePath: host.latex.figurePath, figureWidthIn: host.latex.figureWidthIn, bibFiles: info ? info.bibFiles : [], bibKeys: knownKeys() };
 };
 
 function takeOver(theirs, base) {
@@ -2946,7 +2946,7 @@ function latexBar(r, forPdf) {
       { label: 'Copy the LaTeX', action: () => { win().navigator.clipboard.writeText(r.tex); setStatus('LaTeX copied'); } },
       { label: 'Write the project files into the folder (.tex, .bib, images)', action: () => writeProjectFiles() },
       { label: 'Save a clean copy (without %% apg comments)', action: async () => {
-        const clean = Latex.toLatex(S.doc, { template: cur.text, figurePath: L.figurePath, bibFiles: info ? info.bibFiles : [], markers: false }).tex;
+        const clean = Latex.toLatex(S.doc, { template: cur.text, figurePath: L.figurePath, figureWidthIn: L.figureWidthIn, bibFiles: info ? info.bibFiles : [], markers: false }).tex;
         await L.prepareProject();
         host.notice('Archipelago: saved ' + await L.saveClean(clean));
       } },

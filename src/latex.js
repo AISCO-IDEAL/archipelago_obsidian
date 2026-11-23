@@ -361,13 +361,44 @@
   }
 
   const IMAGE_OK = ['png', 'jpg', 'jpeg', 'pdf', 'eps'];
+  const COLUMN_MAX_IN = 3.5;   // an image up to this wide (inches) is a column figure, wider ones span both columns
+  const PAGE_MAX_IN = 7.0;     // wider than this (a screenshot without a resolution, say) is fitted into the column
+
+  /** The physical width in inches of an image (bytes: Uint8Array or Buffer): a PNG by its pHYs resolution, a PDF by its
+   *  first MediaBox; null for other formats and when the file does not say. */
+  function imageWidthIn(bytes, ext) {
+    const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const e = String(ext || '').toLowerCase();
+    if (e === 'png') {
+      if (b.length < 24) return null;
+      const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+      const width = v.getUint32(16);
+      for (let i = 8; i + 8 <= b.length;) {
+        const len = v.getUint32(i), type = String.fromCharCode(b[i + 4], b[i + 5], b[i + 6], b[i + 7]);
+        if (type === 'pHYs' && len === 9 && i + 17 <= b.length) {
+          const ppm = v.getUint32(i + 8);
+          return b[i + 16] === 1 && ppm > 0 ? width / ppm / 0.0254 : null;
+        }
+        if (type === 'IDAT' || type === 'IEND') return null;
+        i += 12 + len;
+      }
+      return null;
+    }
+    if (e === 'pdf') {
+      let head = '';
+      for (let i = 0; i < Math.min(b.length, 1 << 20); i++) head += String.fromCharCode(b[i]);
+      const m = head.match(/\/MediaBox\s*\[\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s*\]/);
+      return m ? (parseFloat(m[3]) - parseFloat(m[1])) / 72 : null;
+    }
+    return null;
+  }
 
   function figureBlock(p, key, ctx) {
     const f = C.figure(p);
     if (!f) return proseText(p.text, ctx);
     const found = ctx.figurePath ? ctx.figurePath(f.path) : f.path;
     const ext = (f.path.match(/\.([A-Za-z0-9]+)(?:[?#].*)?$/) || [])[1];
-    let graphic;
+    let graphic, env = 'figure';
     if (!found) {
       ctx.warnings.push({ key, text: 'Missing image ' + f.path });
       graphic = '\\fbox{\\parbox{0.6\\linewidth}{\\centering Missing image\\\\\\texttt{' + escape(f.path) + '}}}';
@@ -376,11 +407,16 @@
       graphic = '\\fbox{\\parbox{0.6\\linewidth}{\\centering Image in a format pdflatex cannot show\\\\\\texttt{' + escape(f.path) + '}}}';
     } else {
       if (/[%#{}\\]/.test(found)) ctx.warnings.push({ key, text: 'The image path has a character LaTeX cannot take (% # { } \\): ' + found });
-      graphic = '\\includegraphics[width=0.85\\linewidth,height=0.45\\textheight,keepaspectratio]{' + (/\s/.test(found) ? '"' + found + '"' : found) + '}';
+      // An image that says how wide it is (a figure made at its final size) is placed at that size, never rescaled:
+      // up to COLUMN_MAX_IN in one column, up to PAGE_MAX_IN across both; any other image is fitted into the column.
+      const w = ctx.figureWidthIn ? ctx.figureWidthIn(f.path) : null;
+      const own = typeof w === 'number' && w > 0 && w <= PAGE_MAX_IN;
+      if (own && w > COLUMN_MAX_IN) env = 'figure*';
+      graphic = '\\includegraphics' + (own ? '' : '[width=0.85\\linewidth,height=0.45\\textheight,keepaspectratio]') + '{' + (/\s/.test(found) ? '"' + found + '"' : found) + '}';
     }
-    return ['\\begin{figure}[htbp]', '  \\centering', '  ' + graphic,
+    return ['\\begin{' + env + '}[htbp]', '  \\centering', '  ' + graphic,
       ...(C.trimmed(f.caption) ? ['  \\caption{' + inline(C.trimmed(f.caption), ctx) + '}'] : []),
-      '  \\label{fig:' + key + '}', '\\end{figure}'].join('\n');
+      '  \\label{fig:' + key + '}', '\\end{' + env + '}'].join('\n');
   }
 
   /** A Markdown table: the first row is the header, `:--`/`--:`/`:-:` set the alignment, a `Table: …` line
@@ -610,7 +646,7 @@
    *        bibFiles: [names without .bib], bibKeys: Set or null (null: not checked), markers (default true).
    *  Returns { tex, segments, cites, warnings, bodyStart } (bodyStart: line number, 1-based, where the body begins). */
   function toLatex(d, opts = {}) {
-    const ctx = { cites: new Set(), warnings: [], figurePath: opts.figurePath || null, features: new Set() };
+    const ctx = { cites: new Set(), warnings: [], figurePath: opts.figurePath || null, figureWidthIn: opts.figureWidthIn || null, features: new Set() };
     const segs = segments(d, ctx);
     const markers = opts.markers !== false;
     const strip = t => (markers ? t : t.split('\n').filter(l => !l.startsWith('%% apg ')).join('\n'));
@@ -698,5 +734,5 @@
     d.frontLines = fl;
   }
 
-  return { BUILTIN, toLatex, inline, proseText, citation, figureBlock, tableBlock, equationBlock, citesIn, cssColor, SECTIONING, ESC, escape, fill, bibKeys, bibEntries, bibFromNote, wikiCitation, keyAtLine, logErrors, front, setFront, babelName, segments };
+  return { BUILTIN, toLatex, imageWidthIn, inline, proseText, citation, figureBlock, tableBlock, equationBlock, citesIn, cssColor, SECTIONING, ESC, escape, fill, bibKeys, bibEntries, bibFromNote, wikiCitation, keyAtLine, logErrors, front, setFront, babelName, segments };
 });
