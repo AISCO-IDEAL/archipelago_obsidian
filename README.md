@@ -8,20 +8,21 @@ Write a paper in Obsidian twice over: as a **map** of claims and arguments, and 
 - **Before it is listed, with BRAT:** install the *BRAT* plugin, run *BRAT: Add a beta plugin for testing*, enter `AISCO-IDEAL/archipelago_obsidian`, then enable *Archipelago*. BRAT also installs later releases.
 - **Before it is listed, by hand:** download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/AISCO-IDEAL/archipelago_obsidian/releases/latest) into `<vault>/.obsidian/plugins/archipelago/` (create the folder), restart Obsidian, and enable *Archipelago* under Settings › Community plugins. Updates are done the same way.
 - **Before it is listed, from source:** `git@github.com:AISCO-IDEAL/archipelago_obsidian.git`, then `cd archipelago_obsidian` and `node build.js --install <vault>` (Node 22) builds the plugin and copies it into `<vault>/.obsidian/plugins/archipelago/`. Restart Obsidian and enable *Archipelago*. After a `git pull`, run it again. It does not touch the plugin's `data.json`.
-- **PDF:** You need a TeX distribution: TeX Live, MiKTeX or MacTeX.
-  - If Obsidian is a Flatpak, install TeX Live for it once:
-    `flatpak install flathub org.freedesktop.Sdk.Extension.texlive//26.08`
-    The branch must match Obsidian's runtime. Settings › Archipelago shows the exact command.
+- **PDF:** Nothing to install. The first time you compile, the PDF view offers to download Archipelago's LaTeX engine, [Tectonic](https://tectonic-typesetting.github.io) 0.17.0 (one program, about 10 to 20 MB, checked against its SHA-256). It fetches the LaTeX packages a document needs from a fixed TeX Live snapshot, so everyone gets the same PDF. The first PDF needs the internet and takes longer.
 - **Overleaf sync:** You need an Overleaf plan with Git integration and `git` (the Flatpak includes it). Paste a Git token (Overleaf › Account settings › Git integration) into Settings › Archipelago.
 
 ## Features
 
-- **Map:** islands (sections), claim cards, links (`needs`), notes, nested subsections down to LaTeX's depth, and figure, table and equation cards.
+- **Map:** islands (sections), claim cards, links (`needs`), notes, nested subsections down to LaTeX's depth, and figure, table and equation cards. Click the label of a subsection to select it: Delete removes it with its contents, Ctrl+Shift+G removes only the subsection and keeps its contents, a double click renames it.
+- **Images:** drop image files on the Map, or paste them (Ctrl+V; a screenshot, an image copied from a browser) on the Map or in Prose. They go into the document's `figures/`. A clipboard with text pastes the text.
 - **Prose:** the text of each claim. Numbered headings, styles (bold, italic, strikethrough, highlight, colour, comment) via the context menu or shortcuts, link suggestions.
 - **LaTeX / PDF:**
   - Templates live in `<Archipelago folder>/latex_templates/`.
-  - Each document has a folder with `figures/`, `.bib`, `.tex` and `.pdf`. The folder is a complete project that Overleaf can compile.
+  - Each document has a folder with `figures/` and `.bib`, and, once it has been synced with Overleaf or zipped, the `.tex`. The folder is a complete project that Overleaf can compile.
   - The LaTeX view can be edited. *Apply* takes the edits back into the document.
+  - **Making a PDF writes nothing into the vault.** It is made in a cache on this computer (`~/.cache/archipelago-latex/`), with the entries of the library that the folder's `.bib` still lacks. So two people making a PDF never conflict over files that Overleaf and the sync tool carry. The `.tex`, the missing `.bib` entries, images from elsewhere and a `latexmkrc` are written into the document's folder when the project is synced with Overleaf or zipped. A copy of the PDF goes into the folder only on request (`⋯` › *Save a copy of the PDF*). To work on the folder with other tools (`latexmk`, an editor) without syncing first, use `⋯` › *Write the project files into the folder* (also a command).
+  - The document's template (`latex:` in its front matter) makes the `.tex` that goes to Overleaf. In the PDF view, each computer may preview with another template: that choice stays on the computer, and neither the note nor the `.tex` changes. *Make it the document's template…* (after a confirmation) changes the note, so everyone gets that template and the next Overleaf sync brings its preamble there.
+  - With Tectonic, the folder gets a `latexmkrc` that makes Overleaf compile with XeLaTeX too (Tectonic is XeTeX), so both PDFs are set alike. Delete it to use Overleaf's menu again; it is written again only while it is missing.
 - **Citations:** `[@key]`, or links to Zotero/ZotFlow literature notes. Entries go into the document's `.bib` automatically. Claims about a paper cite it at the end of their subsection and of the linked ones.
 - **Overleaf:**
   - Zip export for upload.
@@ -40,10 +41,10 @@ Write a paper in Obsidian twice over: as a **map** of claims and arguments, and 
 
 ## Privacy
 
-- **Network:** only Overleaf sync goes online, to `git.overleaf.com`. The token is sent only there.
+- **Network:** Overleaf sync goes to `git.overleaf.com`; the token is sent only there. With Tectonic as the engine: its download from `github.com` (once, when you ask for it), and Tectonic itself fetches LaTeX packages from its bundle server when a document first needs them. Nothing about your documents is sent.
 - **Token:** stored in Obsidian's secret storage, the system keychain, from Obsidian 1.11.4. Older versions store it in plain text in the plugin settings.
-- **Programs it starts:** `pdflatex`, `bibtex` or `biber`, and `git`.
-- **Files outside the vault:** LaTeX build files go in `~/.cache/archipelago-latex/`, Overleaf working copies in `~/.cache/archipelago-overleaf/`.
+- **Programs it starts:** Tectonic (the downloaded program) and `git`.
+- **Files outside the vault:** LaTeX build files go in `~/.cache/archipelago-latex/`, Overleaf working copies in `~/.cache/archipelago-overleaf/`, Tectonic and the packages it fetched in `~/.cache/archipelago-tectonic/`. The preview template of each document is kept in Obsidian's local storage of this computer.
 - **Other plugins:** it reads Completr's word list, if Completr is installed, to make suggestions.
 
 ## How documents open

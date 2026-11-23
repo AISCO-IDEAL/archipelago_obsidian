@@ -97,7 +97,7 @@ const S = {
   sourceOpen: new Set(), highlight: null, conflict: null, fade: false,
   // LaTeX and PDF: what the vault has for them (templates, .bib files), the last compile and the PDF shown
   tex: { info: null, templates: null, compiling: false, result: null, pdf: null, pdfFor: null, showLog: false, scrollTo: null,
-    outside: false, report: null, syncing: false },
+    outside: false, report: null, syncing: false, preview: null, installing: false, pending: null },
 };
 let undoStack = [], redoStack = [], breakUndo = true, lastChange = 0, depth = 0;
 let destroyed = false, fitTimer = null;
@@ -2434,18 +2434,43 @@ function templateOf() {
   return list.find(t => t.name === want) || list.find(t => t.name === 'article') || list[0];
 }
 
+/** The citation keys that are known: those of the folder's .bib files, and those the PDF is made with from the library (see
+ *  `refreshPending`). Null when the folder has not been looked at yet. */
+function knownKeys() {
+  const info = S.tex.info;
+  return info ? new Set([...info.bibKeys, ...(S.tex.pending ? S.tex.pending.found : [])]) : null;
+}
+
 let latexCache = { key: null, value: null };
 /** The document as LaTeX now: { tex, warnings, cites, … } (see latex.js). */
 function latexResult() {
-  const info = S.tex.info, t = templateOf();
-  const key = [currentText(), t.name, t.text, info ? info.bibFiles.join(',') + '|' + [...info.bibKeys].join(',') : ''].join('\0');
+  const info = S.tex.info, t = templateOf(), known = knownKeys();
+  const key = [currentText(), t.name, t.text, info ? info.bibFiles.join(',') + '|' + [...known].join(',') : ''].join('\0');
   if (latexCache.key === key) return latexCache.value;
   const value = Latex.toLatex(S.doc, {
     template: t.text, figurePath: host.latex ? host.latex.figurePath : null,
-    bibFiles: info ? info.bibFiles : [], bibKeys: info ? info.bibKeys : null,
+    bibFiles: info ? info.bibFiles : [], bibKeys: known,
   });
   latexCache = { key, value };
   return value;
+}
+
+/** The template this computer shows the PDF with, when it is not the document's: chosen in the PDF view, kept per computer and
+ *  document (not in the note), so everyone may preview with a template of their own. The .tex in the folder, which goes to
+ *  Overleaf and comes back from it, is always made with the document's template. */
+function previewTemplateOf() {
+  const want = S.tex.preview, list = S.tex.templates || Latex.BUILTIN;
+  if (!want || want === templateOf().name) return null;
+  return list.find(t => t.name === want) || null;
+}
+let previewCache = { key: null, tex: null };
+/** The LaTeX the PDF is made from: the document's, or the same text in the preview template. */
+function pdfTex() {
+  const t = previewTemplateOf(), doc = latexResult().tex;
+  if (!t) return doc;
+  const key = doc + '\0' + t.name + '\0' + t.text;
+  if (previewCache.key !== key) previewCache = { key, tex: Latex.toLatex(S.doc, { ...exportOpts(), template: t.text }).tex };
+  return previewCache.tex;
 }
 
 /** Copy the entries the text cites from a Zotero export in the Archipelago folder into the document's .bib. */
@@ -2457,21 +2482,30 @@ async function syncBib() {
   if (r.added.length) { S.tex.info = await host.latex.info(); setStatus(`Added to the .bib: ${r.added.join(', ')}`); }
 }
 
+/** What the text cites that the folder's .bib lacks and the library can supply (a Zotero export, literature notes). The PDF is made
+ *  with these entries from the cache; the .bib itself is only extended when the project is synced with Overleaf or zipped. */
+async function refreshPending() {
+  if (!host.latex || !host.latex.pendingBib) return;
+  const cites = [...latexResult().cites];
+  S.tex.pending = cites.length ? await host.latex.pendingBib(cites) : { found: [], entries: [], missing: [] };
+}
+
 /** Ask the vault for templates and .bib files again (they may have changed since), and compile for the PDF view. */
 async function enterLatex() {
   if (!host.latex) return;
   try {
-    await syncBib();
     const [templates, info] = await Promise.all([host.latex.templates(), host.latex.info()]);
     if (destroyed) return;
     S.tex.templates = templates;
     S.tex.info = info;
+    await refreshPending();
+    if (S.tex.preview === null && host.latex.previewTemplate) S.tex.preview = host.latex.previewTemplate.get() || '';
     // the .tex was changed outside (another editor) since Archipelago wrote it: offered to be taken over
     const file = await host.latex.readTex();
     S.tex.outside = !!(file.text && file.base && FromLatex.norm(file.text) !== FromLatex.norm(file.base) && FromLatex.norm(file.text) !== FromLatex.norm(latexResult().tex));
     if (S.level === 'pdf') {
       if (!S.tex.pdf) { const old = await host.latex.readPdf(); if (old && !S.tex.pdf) S.tex.pdf = old; }   // the last PDF while the new one is made
-      if (S.tex.pdfFor !== latexResult().tex) compile();
+      if (S.tex.pdfFor !== pdfTex()) compile();
     }
   } catch (e) {
     setStatus('LaTeX: ' + (e.message || e));
@@ -2483,24 +2517,42 @@ async function enterLatex() {
 async function compile() {
   if (!host.latex || S.tex.compiling) return;
   if (!S.tex.info) { await enterLatex(); if (S.tex.compiling) return; }
-  if (!(await guardOutside())) return;
-  try { await syncBib(); } catch { /* the .bib may be missing: the warnings say so */ }
-  const tex = latexResult().tex;
+  try { await refreshPending(); } catch { /* the warnings say what is missing */ }
+  const src = pdfTex();   // the PDF is made in the cache: no file of the vault is written or asked about
   S.tex.compiling = true;
-  setStatus('Compiling…');
+  setStatus(S.tex.installing ? 'Downloading Tectonic…' : 'Compiling…');
   requestRender();
   let res;
-  try { res = await host.latex.compile(tex); } catch (e) { res = { ok: false, pdf: null, log: '', errors: [], message: String(e.message || e) }; }
+  try { res = await host.latex.compile(src, S.tex.pending && S.tex.pending.entries.length ? S.tex.pending.entries.join('\n\n') + '\n' : ''); } catch (e) { res = { ok: false, pdf: null, log: '', errors: [], message: String(e.message || e) }; }
   if (destroyed) return;
   S.tex.compiling = false;
-  res.tex = tex;
-  res.errors = (res.errors || []).map(e => ({ ...e, key: e.line ? Latex.keyAtLine(tex, e.line) : '' }));
+  res.tex = src;
+  res.errors = (res.errors || []).map(e => ({ ...e, key: e.line ? Latex.keyAtLine(src, e.line) : '' }));
   S.tex.result = res;
-  if (res.ok && res.pdf) { S.tex.pdf = res.pdf; S.tex.pdfFor = tex; }
-  setStatus(res.ok ? 'PDF made ' + time() : 'LaTeX failed');
+  if (res.ok && res.pdf) { S.tex.pdf = res.pdf; S.tex.pdfFor = src; }
+  setStatus(res.ok ? 'PDF made ' + time() : res.needsTectonic ? 'Tectonic is not downloaded yet' : 'LaTeX failed');
   requestRender();
   // the document changed while it compiled: once more, so the PDF shows what is there
-  if (S.level === 'pdf' && res.ok && latexResult().tex !== tex) compile();
+  if (S.level === 'pdf' && res.ok && pdfTex() !== src) compile();
+}
+
+/** Download the LaTeX engine (Tectonic) once, then compile. */
+async function installEngine() {
+  if (!host.latex || !host.latex.installTectonic || S.tex.installing) return;
+  S.tex.installing = true;
+  setStatus('Downloading Tectonic…');
+  requestRender();
+  try {
+    await host.latex.installTectonic();
+    S.tex.installing = false;
+    setStatus('Tectonic is ready. The first PDF takes longer: it fetches the LaTeX packages it needs.');
+    compile();
+  } catch (e) {
+    S.tex.installing = false;
+    S.tex.result = { ok: false, pdf: null, log: '', errors: [], message: 'Tectonic could not be downloaded: ' + (e.message || e), tex: pdfTex() };
+    setStatus('Download failed');
+    requestRender();
+  }
 }
 
 // ---- the way back: an edited .tex into the document ----
@@ -2508,7 +2560,7 @@ async function compile() {
 /** Take the edits of `theirs` (a .tex) over into the document, as one undo step; `base`: the .tex as last written, or null. */
 const exportOpts = () => {
   const info = S.tex.info;
-  return { template: templateOf().text, figurePath: host.latex.figurePath, bibFiles: info ? info.bibFiles : [], bibKeys: info ? info.bibKeys : null };
+  return { template: templateOf().text, figurePath: host.latex.figurePath, bibFiles: info ? info.bibFiles : [], bibKeys: knownKeys() };
 };
 
 function takeOver(theirs, base) {
@@ -2563,7 +2615,7 @@ async function takeOverFile() {
   requestRender();
 }
 
-/** Before Archipelago writes the .tex (compile, zip, sync): if another editor changed it since, its changes are taken over first,
+/** Before Archipelago writes the .tex (zip, sync; making a PDF writes nothing in the vault): if another editor changed it since, its changes are taken over first,
  *  or, when the user says so, it is overwritten (and kept beside it). False when the user cancels. */
 async function guardOutside(auto) {
   const f = await host.latex.readTex(), norm = FromLatex.norm;
@@ -2654,6 +2706,28 @@ async function syncOverleaf(auto = false) {
     S.tex.lastSync = Date.now();
     requestRender();
   }
+}
+
+/** Write the project into the document's folder, as the zip and the Overleaf sync do first: the .tex, the .bib entries the library
+ *  supplies, images from elsewhere and the latexmkrc. Making a PDF writes none of these; this is for working on the folder with
+ *  other tools (latexmk, an editor). */
+async function writeProjectFiles() {
+  if (!host.latex) return;
+  try {
+    if (!(await enterLatexInfo()) || !(await guardOutside())) return;
+    await syncBib();
+    await host.latex.writeTex(latexResult().tex);
+    S.tex.outside = false;
+    host.notice('Archipelago: wrote the .tex, .bib and images into ' + S.tex.info.folder);
+    setStatus('Project written ' + time());
+  } catch (e) { host.notice('Archipelago: could not write the project files: ' + (e.message || e)); }
+  requestRender();
+}
+/** The folder's .bib files and templates, looked at once. */
+async function enterLatexInfo() {
+  if (S.tex.info) return true;
+  await enterLatex();
+  return !!S.tex.info;
 }
 
 async function overleafZip() {
@@ -2764,7 +2838,8 @@ function latexNotes(r) {
   }
   for (const w of r.warnings) item('warn', w.text, w.key ? () => showInProse(w.key) : null, w.key ? 'show in Prose' : null);
   if (res && !res.ok) {
-    if (res.message) item('error pre', res.message);
+    if (res.needsTectonic) item('outside', S.tex.installing ? 'Downloading Tectonic…' : res.message, S.tex.installing ? null : () => installEngine(), S.tex.installing ? null : 'download and compile');
+    else if (res.message) item('error pre', res.message);
     for (const e of res.errors) {
       const go = e.line && res.tex === r.tex ? () => { S.tex.scrollTo = { line: e.line }; if (S.level !== 'latex') setLevelInternal('latex'); else requestRender(); } : null;
       item('error', e.text, go, e.line ? 'line ' + e.line + (e.key ? ' · ' + e.key : '') : null);
@@ -2783,9 +2858,18 @@ function latexNotes(r) {
 function latexBar(r, forPdf) {
   const L = host.latex, info = S.tex.info;
   const list = S.tex.templates || Latex.BUILTIN, cur = templateOf();
-  const sel = h('select', { class: 'tsel', title: 'LaTeX template (kept in the document as "latex:" in its front matter; your own are in latex_templates/)' },
-    list.map(t => h('option', { value: t.name, selected: t.name === cur.name }, t.name)));
-  sel.addEventListener('change', () => change(() => Latex.setFront(S.doc, 'latex', sel.value)));
+  // LaTeX view: the document's template (a change of the document, like any edit).
+  // PDF view: the template this computer previews with. That choice changes nothing in the document, the vault or Overleaf; the
+  // document's own template is the one marked. Only the button "Make it the document's template" (after a confirmation) does.
+  const now = forPdf ? previewTemplateOf() : null;
+  const sel = forPdf && L.previewTemplate
+    ? h('select', { class: 'tsel', title: 'The template this computer shows the PDF with. The choice stays on this computer: the document, the .tex and Overleaf keep the document\'s template.' },
+      list.map(t => h('option', { value: t.name, selected: t.name === (now ? now.name : cur.name) }, t.name === cur.name ? t.name + ' (the document\'s)' : 'Preview: ' + t.name)))
+    : h('select', { class: 'tsel', title: 'LaTeX template (kept in the document as "latex:" in its front matter; your own are in latex_templates/)' },
+      list.map(t => h('option', { value: t.name, selected: t.name === cur.name }, t.name)));
+  if (forPdf && L.previewTemplate) sel.addEventListener('change', () => { S.tex.preview = sel.value === cur.name ? '' : sel.value; L.previewTemplate.set(S.tex.preview); compile(); });
+  else sel.addEventListener('change', () => change(() => Latex.setFront(S.doc, 'latex', sel.value)));
+  const adopt = now ? h('button', { class: 'tb', title: 'Make the preview template the document\'s template, for everyone who works on it', onclick: () => adoptPreview(now) }, 'Make it the document\'s template…') : null;
   const btn = (label, title, f, cls) => h('button', { class: 'tb' + (cls ? ' ' + cls : ''), title, onclick: f }, label);
   const right = h('div', { class: 'grp' });
   if (!forPdf) {
@@ -2799,20 +2883,37 @@ function latexBar(r, forPdf) {
     const rr = ev.currentTarget.getBoundingClientRect();
     showMenu(rr.left, rr.bottom + 2, [
       { label: 'Copy the LaTeX', action: () => { win().navigator.clipboard.writeText(r.tex); setStatus('LaTeX copied'); } },
+      { label: 'Write the project files into the folder (.tex, .bib, images)', action: () => writeProjectFiles() },
       { label: 'Save a clean copy (without %% apg comments)', action: async () => {
         const clean = Latex.toLatex(S.doc, { template: cur.text, figurePath: L.figurePath, bibFiles: info ? info.bibFiles : [], markers: false }).tex;
         await L.prepareProject();
         host.notice('Archipelago: saved ' + await L.saveClean(clean));
       } },
+      ...(S.tex.pdf ? [{ label: 'Save a copy of the PDF in the document\'s folder', action: async () => host.notice('Archipelago: saved ' + await L.savePdf(S.tex.pdf)) }] : []),
       { sep: true },
       ...(info ? info.bibFiles.map(b => ({ label: `Open ${b}.bib (${info.bibKeys.size} entries)`, action: () => L.openPath(`${info.folder}/${b}.bib`) })) : []),
       { label: 'Show the folder', action: () => L.showFolder() },
     ]);
   }));
-  right.append(btn(S.tex.compiling ? 'Compiling…' : forPdf ? 'Compile' : 'Compile ▸ PDF', 'Write the .tex and make the PDF', () => {
+  right.append(btn(S.tex.compiling ? 'Compiling…' : forPdf ? 'Compile' : 'Compile ▸ PDF', 'Make the PDF (on this computer only: no file of the vault is written)', () => {
     if (!forPdf) setLevelInternal('pdf'); else compile();
   }, 'primary'));
-  return h('div', { class: 'texbar' }, h('div', { class: 'grp' }, sel), right);
+  return h('div', { class: 'texbar' }, h('div', { class: 'grp' }, sel, adopt), right);
+}
+
+/** The preview template becomes the document's template, after the user has said yes: the note changes (`latex:`), so everyone who
+ *  has the document gets it, and the next Overleaf sync brings its preamble there. */
+async function adoptPreview(t) {
+  const ok = await host.choose('Make "' + t.name + '" the document\'s template?',
+    'The document and its .tex, which goes to Overleaf, would use this template from now on, for everyone who works on the document. '
+    + 'The next Overleaf sync brings the new preamble to Overleaf. Everyone\'s own previews stay as they are.',
+    [{ label: 'Make it the document\'s template', value: true, cta: true }]);
+  if (ok !== true) return;
+  S.tex.preview = '';
+  host.latex.previewTemplate.set('');
+  act(() => Latex.setFront(S.doc, 'latex', t.name));
+  setStatus('The document\'s template is now ' + t.name);
+  compile();
 }
 
 /** The edited LaTeX of the editor into the document. */
@@ -2876,7 +2977,7 @@ function renderPdf(main) {
     pdfShown = null;
   }
   sc.querySelector('.texbar').replaceWith(latexBar(r, true));
-  const notes = latexNotes(r), stale = S.tex.pdf && S.tex.pdfFor !== r.tex && !S.tex.compiling;
+  const notes = latexNotes(r), stale = S.tex.pdf && S.tex.pdfFor !== pdfTex() && !S.tex.compiling;
   const pn = h('div', { class: 'pdfnotes' }, notes, stale && h('div', { class: 'tn stale' }, 'The document changed since this PDF was made. Compile to update it.'));
   sc.querySelector('.pdfnotes').replaceWith(pn);
   const pages = sc.querySelector('.pages');
@@ -3001,6 +3102,7 @@ return {
     }
     return false;
   },
+  writeProject: writeProjectFiles,
   group: groupSelection, ungroup: ungroupSelection, undo, redo, check: () => C.check(currentText()),
   hasConflict: () => !!S.conflict, resolveConflicts, chooseAll, saveNow: save,
   /** The open text when a conflict is waiting (to keep it somewhere before the view closes), else null. */

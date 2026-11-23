@@ -42,6 +42,10 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
   fs.writeFileSync(path.join(vault, '.obsidian', 'app.json'), appConfig);
   // switched on the way a user has it, so it loads at every start (and restores its tabs)
   fs.writeFileSync(path.join(vault, '.obsidian', 'community-plugins.json'), JSON.stringify(['archipelago']));
+  // The PDF is made with Tectonic, which the plugin downloads on request. The test does not download it: it uses the one an earlier
+  // use of the plugin left in ~/.cache (the PDF tests are skipped without it).
+  const TECTONIC = path.join(os.homedir(), '.cache', 'archipelago-tectonic', '0.17.0', 'tectonic');
+  const HAVE_TECTONIC = fs.existsSync(TECTONIC);
   const build = spawnSync('node', [path.join(__dirname, '..', 'build.js'), '--install', vault], { encoding: 'utf8' });
   if (build.status !== 0) { console.log(build.stdout, build.stderr); process.exit(1); }
   fs.writeFileSync(path.join(profile, 'obsidian.json'), JSON.stringify({ vaults: { a1b2c3d4e5f60718: { path: vault, ts: Date.now(), open: true } } }));
@@ -49,7 +53,6 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
   const original = fs.readFileSync(file, 'utf8');
 
   const port = await freePort();
-  // A Flatpak Obsidian finds pdflatex in Flathub's TeX Live extension (org.freedesktop.Sdk.Extension.texlive), inside its sandbox.
   const cmd = (process.env.ARCHIPELAGO_OBSIDIAN || 'flatpak run --no-talk-name=org.freedesktop.Flatpak md.obsidian.Obsidian').split(' ');
   const proc = spawn(cmd[0], [...cmd.slice(1), `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, '--ozone-platform=headless', '--disable-gpu'], { stdio: 'ignore', detached: true });
   const killObsidian = () => { spawnSync('pkill', ['-f', '--', `user-data-dir=${profile}`]); };
@@ -682,10 +685,15 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await type(' See [[Source/die_gurken/@libkey2025|@libkey2025]] and [[Source/@missing2024|@missing2024]] and [[Source/@notekey2025|@notekey2025]].');
       await settle();
       await ev('T.ui().setLevel("latex")');
-      ok(await waitFor(`T.ui().S.tex.info && T.ui().S.tex.info.bibKeys.has("libkey2025")`, 8000), 'the entry of the linked note is copied from the library .bib into the document\'s', await ev('[...T.ui().S.tex.info.bibKeys]'));
-      const docBib = fs.readFileSync(path.join(vault, TEXDIR, 'tex.bib'), 'utf8');
-      ok(docBib.includes('@article{libkey2025,') && !docBib.includes('other2020') && docBib.includes('@book{knuth84,'), 'only the cited entry, and the existing ones stay');
-      ok(/@misc\{notekey2025,[^]*author = \{Ada Lovelace and Alan Turing\}[^]*title = \{\{Note Entry Title\}\}/.test(fs.readFileSync(path.join(vault, TEXDIR, 'tex.bib'), 'utf8')), 'a key that no .bib has comes from the front matter of its literature note');
+      // Looking at the LaTeX (or making a PDF) writes nothing into the vault: the entries the library can supply are known, and the
+      // PDF is made with them from the cache. The document's .bib gets them when the project is zipped or synced with Overleaf.
+      ok(await waitFor(`T.ui().S.tex.pending && T.ui().S.tex.pending.found.includes("libkey2025") && T.ui().S.tex.pending.found.includes("notekey2025")`, 8000), 'the entries of the linked notes are found in the library .bib and in the literature note, to make the PDF with', await ev('T.ui().S.tex.pending'));
+      const bibFile = path.join(vault, TEXDIR, 'tex.bib');
+      ok(!/libkey2025|notekey2025/.test(fs.readFileSync(bibFile, 'utf8')), 'and the document\'s .bib is not written to by that');
+      await ev('T.ui().host.latex.syncBib(["libkey2025", "notekey2025"])');   // what the zip and the sync do first
+      const docBib = fs.readFileSync(bibFile, 'utf8');
+      ok(docBib.includes('@article{libkey2025,') && !docBib.includes('other2020') && docBib.includes('@book{knuth84,'), 'the zip and the sync copy only the cited entry into it, and the existing ones stay');
+      ok(/@misc\{notekey2025,[^]*author = \{Ada Lovelace and Alan Turing\}[^]*title = \{\{Note Entry Title\}\}/.test(docBib), 'a key that no .bib has comes from the front matter of its literature note');
       tx = await latex();
       ok(tx.includes('See \\cite{libkey2025} and \\cite{missing2024} and \\cite{notekey2025}.'), 'the links are \\cite in the LaTeX', tx.match(/See \\cite[^\n]*/));
       ok(await ev('T.qa(".tn.warn").some(e => e.textContent.includes("Unknown citation key missing2024"))') && !(await ev('T.qa(".tn.warn").some(e => e.textContent.includes("libkey2025"))')), 'a key that is nowhere is reported, the found one is not');
@@ -695,42 +703,95 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await click(line.x, line.y); await click(line.x, line.y, { clickCount: 2 });
       await ev(`(() => { if (T.ui().getLevel() !== 'latex') return; const r = T.qa('.tl').find(r => r.textContent.includes('As shown before')); if (r) r.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, composed: true })); })()`);
       ok(await waitFor('T.ui().getLevel() === "prose" && T.ui().S.highlight === T.para("c5").id'), 'double-clicking a line shows its paragraph in Prose');
-      // the PDF
+      // the PDF: made with Tectonic, in the cache; nothing of the vault is written
+      const vaultTexBefore = fs.existsSync(path.join(vault, TEXDIR, 'tex.tex')) ? fs.readFileSync(path.join(vault, TEXDIR, 'tex.tex'), 'utf8') : null;
+      const folderListing = () => fs.readdirSync(path.join(vault, TEXDIR), { recursive: true }).map(String).sort().join('|');
+      const folderBefore = folderListing();
+      if (!HAVE_TECTONIC) {
+        console.log('  (Tectonic is not in ~/.cache/archipelago-tectonic: the PDF tests are skipped; open the PDF view of the plugin once to download it)');
+        await ev('T.ui().setLevel("pdf")');
+        ok(await waitFor('!!T.q("#pdfview")'), 'PDF view');
+        ok(await waitFor('T.ui().S.tex.result !== null && T.ui().S.tex.result.needsTectonic === true', 30000) && await ev('T.qa(".tn.outside").some(e => e.textContent.includes("download and compile"))'), 'without Tectonic, the PDF view offers to download it');
+      } else {
       await ev('T.ui().setLevel("pdf")');
       ok(await waitFor('!!T.q("#pdfview")'), 'PDF view');
-      ok(await waitFor('T.ui().S.tex.result !== null', 90000), 'opening it compiles');
+      ok(await waitFor('T.ui().S.tex.result !== null', 180000), 'opening it compiles');
       const res = await ev('(() => { const r = T.ui().S.tex.result; return { ok: r.ok, message: r.message, errors: r.errors, log: (r.log || "").slice(-600) }; })()');
-      ok(res.ok, 'pdflatex makes the PDF (with bibtex)', res);
+      ok(res.ok, 'Tectonic makes the PDF (with the bibliography)', res);
       if (res.ok) {
-        ok(await has(`${TEXDIR}/tex.tex`) && await has(`${TEXDIR}/tex.pdf`), 'the .tex and the .pdf are in the document\'s folder');
-        ok(await has(`${TEXDIR}/figures/ext_feasibility.png`), 'the image from outside was copied into its figures/');
-        // the folder alone is a project that compiles elsewhere (Overleaf runs latexmk): copy it away and build it there, with nothing of the vault around
-        const proj = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'archipelago-overleaf-'));
-        fs.cpSync(path.join(vault, TEXDIR), proj, { recursive: true });
-        fs.rmSync(path.join(proj, 'tex.pdf'));
-        const lm = spawnSync('latexmk', ['-pdf', '-interaction=nonstopmode', '-halt-on-error', 'tex.tex'], { cwd: proj, encoding: 'utf8', timeout: 240000 });
-        ok(lm.status === 0 && fs.existsSync(path.join(proj, 'tex.pdf')), 'the folder compiles on its own with latexmk (as on Overleaf), bibliography included', (lm.stdout || '').split('\n').filter(l => /^!|Error|not found|undefined/i.test(l)).slice(0, 6).concat((lm.stdout || '').split('\n').slice(-12)));
-        fs.rmSync(proj, { recursive: true, force: true });
-        // the zip for Overleaf
+        ok(folderListing() === folderBefore && (vaultTexBefore === null ? !fs.existsSync(path.join(vault, TEXDIR, 'tex.tex')) : fs.readFileSync(path.join(vault, TEXDIR, 'tex.tex'), 'utf8') === vaultTexBefore) && !fs.existsSync(path.join(vault, TEXDIR, 'tex.pdf')), 'making the PDF writes nothing into the document\'s folder (no .tex, .pdf, images, .bib)', { before: folderBefore, after: folderListing() });
+        ok(!/Citation `(knuth84|libkey2025|notekey2025)' .*undefined/.test(await ev('T.ui().S.tex.result.log')), 'the citations are resolved from the .bib files and the library (the key that is nowhere stays undefined)');
+        ok(!/Unable to load picture|File `[^']*\.(png|jpg|pdf)' not found|cannot find image/i.test(await ev('T.ui().S.tex.result.log')), 'the images (also the one from outside the folder) are found', (await ev('T.ui().S.tex.result.log')).split('\n').filter(l => /picture|not found|cannot find/i.test(l)).slice(0, 5));
+        ok(await waitFor('T.qa(".pages canvas").length >= 2', 30000), 'its pages are drawn', await ev('T.qa(".pages canvas").length'));
+        // the folder is a project that compiles elsewhere (Overleaf runs latexmk) once it is written: by the zip and the sync
         await ev('T.ui().setLevel("latex")');
         await waitFor('!!T.q("#latex .texsrc")');
+        await ev('T.qa(".texbar button").find(b => b.textContent === "⋯").click()');
+        await waitFor('T.qa(".menu .item").some(i => i.textContent.startsWith("Write the project files"))');
+        await ev('T.qa(".menu .item").find(i => i.textContent.startsWith("Write the project files")).click()');
+        ok(await waitFor(`app.vault.adapter.exists("${TEXDIR}/tex.tex")`, 15000) && await waitFor(`app.vault.adapter.exists("${TEXDIR}/figures/ext_feasibility.png")`, 5000) && /xelatex/.test(fs.readFileSync(path.join(vault, TEXDIR, 'latexmkrc'), 'utf8')) && /libkey2025/.test(fs.readFileSync(path.join(vault, TEXDIR, 'tex.bib'), 'utf8')), 'the menu item "Write the project files into the folder" puts the .tex, the .bib entries, the images from outside and a latexmkrc for XeLaTeX there (as sync and zip do)');
+        ok(fs.readFileSync(path.join(vault, TEXDIR, 'tex.tex'), 'utf8') === await latex(), 'the .tex is what the LaTeX view shows');
+        ok(await ev('app.commands.commands["archipelago:write-project"] !== undefined'), 'and there is a command for it');
+        const proj = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'archipelago-overleaf-'));
+        fs.cpSync(path.join(vault, TEXDIR), proj, { recursive: true });
+        const lm = spawnSync('latexmk', ['-pdf', '-interaction=nonstopmode', '-halt-on-error', 'tex.tex'], { cwd: proj, encoding: 'utf8', timeout: 240000 });
+        ok(lm.status === 0 && fs.existsSync(path.join(proj, 'tex.pdf')), 'that folder compiles on its own with latexmk and its latexmkrc (as on Overleaf), bibliography included', (lm.stdout || '').split('\n').filter(l => /^!|Error|not found|undefined/i.test(l)).slice(0, 6).concat((lm.stdout || '').split('\n').slice(-12)));
+        fs.rmSync(proj, { recursive: true, force: true });
+        // the zip for Overleaf
         await ev('T.qa(".texbar button").find(b => b.textContent.startsWith("Overleaf")).click()');
-          ok(await ev(`T.qa('.menu .item .label').map(e => e.textContent).join()`) === 'Connect to Overleaf…,Download a zip for Overleaf', 'the Overleaf button offers to connect, or a zip');
-          await ev(`T.qa('.menu .item').find(i => i.textContent.startsWith('Download')).click()`);
+        ok(await ev(`T.qa('.menu .item .label').map(e => e.textContent).join()`) === 'Connect to Overleaf…,Download a zip for Overleaf', 'the Overleaf button offers to connect, or a zip');
+        await ev(`T.qa('.menu .item').find(i => i.textContent.startsWith('Download')).click()`);
         ok(await waitFor(`app.vault.adapter.exists("${TEXDIR}/tex_overleaf.zip")`, 15000), 'which writes a zip of the folder');
         const zipPath = path.join(vault, TEXDIR, 'tex_overleaf.zip');
         const zl = spawnSync('python3', ['-I', '-c', 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print("\\n".join(sorted(z.namelist())))', zipPath], { encoding: 'utf8' });
         ok(zl.status === 0 && zl.stdout.split('\n').includes('tex.tex') && zl.stdout.split('\n').includes('tex.bib') && zl.stdout.includes('figures/ext_feasibility.png') && !/\.pdf$|_overleaf\.zip|_clean/m.test(zl.stdout), 'it is a valid zip with the .tex, .bib and figures, and without the PDF', zl.stdout + zl.stderr);
-        const ex = fs.mkdtempSync(path.join(os.homedir(), '.cache', 'archipelago-overleaf-'));
-        spawnSync('python3', ['-I', '-c', 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])', zipPath, ex]);
-        const lz = spawnSync('latexmk', ['-pdf', '-interaction=nonstopmode', '-halt-on-error', 'tex.tex'], { cwd: ex, encoding: 'utf8', timeout: 240000 });
-        ok(lz.status === 0 && fs.existsSync(path.join(ex, 'tex.pdf')), 'and the unpacked zip compiles on its own', (lz.stdout || '').split('\n').slice(-8));
-        fs.rmSync(ex, { recursive: true, force: true });
         await ev('T.ui().setLevel("pdf")');
-        ok(fs.readFileSync(path.join(vault, TEXDIR, 'tex.tex'), 'utf8') === await latex(), 'the .tex is what the LaTeX view shows');
-        ok(await waitFor('T.qa(".pages canvas").length >= 2', 20000), 'its pages are drawn', await ev('T.qa(".pages canvas").length'));
-        ok(!/Citation `knuth84' .*undefined/.test(await ev('T.ui().S.tex.result.log')), 'the citation is resolved');
+        ok(await waitFor('T.qa(".pages canvas").length >= 2', 20000), 'back in the PDF view its pages are drawn', await ev('T.qa(".pages canvas").length'));
         await shot('06-pdf');
+        // a copy of the PDF in the folder only when asked
+        await ev('T.qa(".texbar button").find(b => b.textContent === "⋯").click()');
+        await waitFor('T.qa(".menu .item").some(i => i.textContent.startsWith("Save a copy of the PDF"))');
+        await ev('T.qa(".menu .item").find(i => i.textContent.startsWith("Save a copy of the PDF")).click()');
+        ok(await waitFor(`app.vault.adapter.exists("${TEXDIR}/tex.pdf")`, 10000), 'a copy of the PDF is saved in the folder when the user asks for it');
+        fs.rmSync(path.join(vault, TEXDIR, 'tex.pdf'));
+        // the .tex was changed by another editor: making a PDF neither asks nor overwrites it (it is not written)
+        const texInFolder = path.join(vault, TEXDIR, 'tex.tex');
+        fs.writeFileSync(texInFolder, fs.readFileSync(texInFolder, 'utf8') + '\n% changed elsewhere\n');
+        await ev('T.ui().compile(); true');
+        await waitFor('!T.ui().S.tex.compiling', 180000);
+        ok(!(await ev('[...document.querySelectorAll(".modal-container")].some(m => m.textContent.includes("changed outside"))')) && fs.readFileSync(texInFolder, 'utf8').endsWith('% changed elsewhere\n'), 'making the PDF does not ask about, or overwrite, a .tex that another editor changed');
+        fs.writeFileSync(texInFolder, fs.readFileSync(texInFolder, 'utf8').replace('\n% changed elsewhere\n', ''));
+        // a template of this computer only, for the PDF: neither the note nor the .tex in the folder change
+        fs.writeFileSync(path.join(vault, FIG, 'latex_templates', 'big.tex'), fs.readFileSync(path.join(vault, FIG, 'latex_templates', 'article.tex'), 'utf8').replace(/\\documentclass\[[^\]]*\]/, '\\documentclass[12pt,a5paper]'));
+        await ev('T.ui().setLevel("latex")'); await waitFor('!!T.q("#latex .texsrc")');
+        await ev('T.ui().setLevel("pdf")');
+        ok(await waitFor('T.qa("#pdfview .texbar select").length === 1 && [...T.qa("#pdfview .texbar select")[0].options].some(o => o.value === "big")', 15000), 'the PDF view offers the templates in one list, the document\'s marked');
+        ok(await ev('T.qa("#pdfview .texbar select")[0].selectedOptions[0].textContent.includes("the document")'), 'with the document\'s selected first');
+        const noteBefore = texDisk(), texBefore = fs.readFileSync(texInFolder, 'utf8');
+        await ev('(() => { const s = T.qa("#pdfview .texbar select")[0]; s.value = "big"; s.dispatchEvent(new Event("change")); })()');
+        ok(await waitFor('!T.ui().S.tex.compiling && !!T.ui().S.tex.result && T.ui().S.tex.result.tex.includes("a5paper")', 180000) && await ev('T.ui().S.tex.result.ok'), 'choosing one makes the PDF with it', await ev('(() => { const r = T.ui().S.tex.result; return r && { ok: r.ok, message: r.message, errors: r.errors, log: (r.log || "").slice(-400) }; })()'));
+        ok(fs.readFileSync(texInFolder, 'utf8') === texBefore && !texBefore.includes('a5paper') && texDisk() === noteBefore, 'the .tex in the folder and the note are unchanged');
+        ok(await ev('T.ui().host.latex.previewTemplate.get()') === 'big', 'the choice is kept on this computer, outside the note');
+        // it becomes the document's template only after a confirmation
+        ok(await ev('T.qa("#pdfview .texbar button").some(b => b.textContent.startsWith("Make it the document"))'), 'a button offers to make it the document\'s template');
+        await ev('T.qa("#pdfview .texbar button").find(b => b.textContent.startsWith("Make it the document")).click()');
+        ok(await waitFor('[...document.querySelectorAll(".modal-container")].some(m => m.textContent.includes("the document\'s template"))', 5000), 'which asks first');
+        await ev(`[...document.querySelectorAll('.modal-container button')].find(b => b.textContent === 'Cancel').click()`);
+        await sleep(300);
+        ok(texDisk() === noteBefore && await ev('T.ui().host.latex.previewTemplate.get()') === 'big', 'Cancel changes nothing');
+        await ev('T.qa("#pdfview .texbar button").find(b => b.textContent.startsWith("Make it the document")).click()');
+        await waitFor('[...document.querySelectorAll(".modal-container")].some(m => m.textContent.includes("the document\'s template"))', 5000);
+        await ev(`[...document.querySelectorAll('.modal-container button')].find(b => b.classList.contains('mod-cta')).click()`);
+        await settle();
+        ok(/^latex: big$/m.test(texDisk()) && await ev('T.ui().host.latex.previewTemplate.get()') === '', 'confirming makes it the document\'s template (front matter), and the preview is reset');
+        await waitFor('!T.ui().S.tex.compiling', 180000);
+        await ev('(() => { const s = T.qa("#pdfview .texbar select")[0]; s.value = "article"; s.dispatchEvent(new Event("change")); })()');
+        await ev('T.ui().setLevel("latex")'); await waitFor('!!T.q("#latex .texsrc")');
+        await ev('(() => { const s = T.q(".texbar select"); s.value = "article"; s.dispatchEvent(new Event("change")); })()');
+        await settle();
+        ok(!/^latex: big$/m.test(texDisk()), 'and it can be set back in the LaTeX view');
+        await ev('T.ui().setLevel("pdf")');
+        await waitFor('!T.ui().S.tex.compiling', 180000);
         // an error points at its paragraph
         await ev('T.ui().setLevel("prose")');
         await waitFor('!!T.q("#prose")');
@@ -746,6 +807,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
         await ev('T.qa(".tn.error .where").find(e => e.textContent.startsWith("line")).click()');
         ok(await waitFor('T.ui().getLevel() === "latex" && T.qa(".tl.err").some(r => r.textContent.includes("nosuchmacro"))'), 'clicking it shows the line in the LaTeX view, marked');
         await sleep(500); await shot('07-latex-error');
+      }
       }
       // a clean copy without markers
       await ev('T.ui().setLevel("latex")');
@@ -784,8 +846,11 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await ev('T.ui().undo()');
       ok(!(await ev('T.para("c1").text')).includes('edited outside'), 'one undo takes it back');
       fs.writeFileSync(texFile, fs.readFileSync(texFile, 'utf8').replace('A signed distance program composes', 'A signed distance program (outside again) composes'));
-      await ev('T.ui().compile(); true');
-      ok(await waitFor('[...document.querySelectorAll(".modal-container")].some(m => m.textContent.includes("changed outside"))', 10000), 'making the PDF over a .tex that was changed elsewhere asks first, instead of overwriting it');
+      // making a PDF writes nothing, so it has nothing to ask; the zip (and the sync) write the .tex, so they ask first
+      await ev('T.ui().setLevel("latex")'); await waitFor('!!T.q("#latex .texsrc")');
+      await ev('T.qa(".texbar button").find(b => b.textContent.startsWith("Overleaf")).click()');
+      await ev(`T.qa('.menu .item').find(i => i.textContent.startsWith('Download')).click()`);
+      ok(await waitFor('[...document.querySelectorAll(".modal-container")].some(m => m.textContent.includes("changed outside"))', 10000), 'writing the .tex (the zip, the sync) over one that was changed elsewhere asks first, instead of overwriting it');
       await ev(`[...document.querySelectorAll('.modal-container button')].find(b => b.textContent === 'Take them over').click()`);
       ok(await waitFor('T.para("c2").text.includes("(outside again)")'), 'and takes the changes over when asked to');
       await waitFor('!T.ui().S.tex.compiling', 90000);
