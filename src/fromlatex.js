@@ -344,6 +344,7 @@
     if (!same(T.tail, O.tail) && !(B && same(T.tail, B.tail))) note('note', '', 'The end of the .tex (after the text) was changed: that is not taken over');
     if (T.before) note('skipped', '', 'Text before the first "%% apg" line is not taken over: ' + T.before.slice(0, 60));
 
+    const drop = new Set();   // text paragraphs that were removed in the .tex
     const apply = (key, it, body) => {
       const p = it.p;
       if (it.type === 'section' || it.type === 'group') {
@@ -359,7 +360,10 @@
         const paras = blocksMd(body, p.text);
         p.text = paras.length ? paras[0] : '';
         for (const md of paras.slice(1).reverse()) inserts.push({ s: it.s, after: p, p: C.newParagraph({ text: md }) });
-        if (!paras.length) note('applied', key, 'The paragraph was removed in the .tex: its text is emptied, its claim stays');
+        if (!paras.length) {
+          if (!p.claim && !p.cid) { drop.add(p); note('applied', key, 'The paragraph was removed in the .tex'); }
+          else note('applied', key, 'The paragraph was removed in the .tex: its text is emptied, its claim stays');
+        }
         return true;
       }
       if (it.type === 'equation') {
@@ -408,7 +412,11 @@
       }
       if (theirs === null) {
         if (bm && b === undefined) continue;   // new in the document since the .tex was written: not removed there
-        if (it.type === 'prose' && C.trimmed(it.p.text) !== '') { it.p.text = ''; changed++; note('applied', key, 'Removed in the .tex: the paragraph is emptied, its claim stays'); }
+        if (it.type === 'prose' && C.trimmed(it.p.text) !== '') {
+          changed++;
+          if (!it.p.claim && !it.p.cid) { drop.add(it.p); note('applied', key, 'Removed in the .tex'); }
+          else { it.p.text = ''; note('applied', key, 'Removed in the .tex: the paragraph is emptied, its claim stays'); }
+        }
         else if (it.type !== 'prose') note('skipped', key, 'Removed in the .tex: not removed from the document (do that in Map or Prose)');
         continue;
       }
@@ -424,7 +432,7 @@
       ins.s.paragraphs.splice(k + 1, 0, ins.p);
       changed++;
     }
-    for (const s of d.sections) C.normalizeGroups(s);
+    for (const s of d.sections) { if (drop.size) s.paragraphs = s.paragraphs.filter(p => !drop.has(p)); C.normalizeGroups(s); }
     return { changed, report, preamble };
   }
 

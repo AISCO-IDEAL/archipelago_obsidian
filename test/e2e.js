@@ -10,6 +10,8 @@ const http = require('http');
 const net = require('net');
 const { spawn, spawnSync } = require('child_process');
 const Core = require('../src/core.js');
+/** The example document in the form the plugin leaves a document in (one text per heading), so that opening it changes nothing. */
+const fixture = () => { const d = Core.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'example.apg'), 'utf8')); Core.normalizeText(d); return Core.serialize(d); };
 
 const ROOT = path.resolve(__dirname, '..');
 const shotsAt = process.argv.indexOf('--shots');
@@ -32,9 +34,9 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
   fs.mkdirSync(path.join(vault, '.obsidian', 'plugins', 'archipelago'), { recursive: true });
   fs.mkdirSync(profile, { recursive: true });
   fs.mkdirSync(path.join(vault, 'Papers'));
-  fs.copyFileSync(path.join(__dirname, 'fixtures', 'example.apg'), path.join(vault, 'Papers', `example.${EXT}`));
+  fs.writeFileSync(path.join(vault, 'Papers', `example.${EXT}`), fixture());
   // a second document, always Markdown, for the tests of the redirect
-  fs.copyFileSync(path.join(__dirname, 'fixtures', 'example.apg'), path.join(vault, 'Papers', 'second.md'));
+  fs.writeFileSync(path.join(vault, 'Papers', 'second.md'), fixture());
   fs.cpSync(path.join(__dirname, 'fixtures', 'figures'), path.join(vault, 'Papers', 'figures'), { recursive: true });
   fs.writeFileSync(path.join(vault, 'Papers', 'Note.md'), '# Background\n\nSome text about signed distance fields.\n\n# Method\n\nWe project.\n');
   // like the real vault: new files go next to the current one, attachments to a folder of their own
@@ -101,6 +103,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       box: s => { const e = typeof s === 'string' ? T.q(s) : s; if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height }; },
       card: text => T.box(T.qa('.card').find(c => c.textContent.includes(text))),
       cardEl: text => T.qa('.card').find(c => c.textContent.includes(text)),
+      body: cid => T.ui().bodyOf(cid),
       para: cid => { for (const s of T.ui().S.doc.sections) for (const p of s.paragraphs) if (p.cid === cid) return p; return null; },
       island: title => T.box(T.qa('.island').find(e => e.querySelector('.head').textContent.trim() === title)),
     }`);
@@ -169,7 +172,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     console.log('open');
     await openDoc(DOC);
     ok(await U('S.doc.sections.length') === 6 && await ev('T.qa(".island").length') === 6, 'six islands');
-    ok(await ev('T.qa(".card").length') === 32, 'all cards drawn');
+    ok(await ev('T.qa(".card").length') === 31, 'all cards drawn');
     ok(await ev('T.qa("#noodles .hit").length') === 10, 'all noodles drawn');
     ok(await waitFor('T.q(".thumb img") && T.q(".thumb img").naturalWidth > 0'), 'the figure loads from the vault');
     ok(await ev('app.workspace.getActiveViewOfType(app.workspace.getLeavesOfType("archipelago-view")[0].view.constructor) !== null'), 'it is the active view');
@@ -219,7 +222,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     ok(await ev('T.ui().shadow.activeElement && T.ui().shadow.activeElement.tagName') === 'INPUT', 'Ctrl+G groups them and names the group');
     ok(await ev('app.workspace.getLeavesOfType("graph").length') === 0, 'and Obsidian did not open its graph view');
     await type('Representations'); await key('Enter');
-    ok(await U('S.doc.sections[1].paragraphs[0].text') === '## Representations', 'the group is named');
+    ok(await U("S.doc.sections[1].paragraphs.some(p => p.text === '## Representations')"), 'the group is named');
     await shot('02-group');
     await click(c.x, c.y);
     await key('g', CTRL | SHIFT);
@@ -329,10 +332,10 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
 
     console.log('figures are tidied');
     // a document of its own for this, so that the other tests keep theirs
-    fs.copyFileSync(path.join(__dirname, 'fixtures', 'example.apg'), path.join(vault, 'Papers', 'tidy.md'));
+    fs.writeFileSync(path.join(vault, 'Papers', 'tidy.md'), fixture());
     await waitFor('!!app.vault.getAbstractFileByPath("Papers/tidy.md")');
     await openDoc('Papers/tidy.md');
-    await waitFor('T.qa(".card").length === 32');
+    await waitFor('T.qa(".card").length === 31');
     const TIDY = `${FIG}/tidy/figures`;
     const removeCard = async text => { const c = await ev(`T.card(${JSON.stringify(text)})`); await click(c.x, c.y); await key('Delete'); };
     await dropPng('tidy a.png', 250, 650); await dropPng('tidy b.png', 650, 650);
@@ -380,7 +383,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     await openDoc(DOC);
 
     console.log('deleting a document');
-    const fixtureText = fs.readFileSync(path.join(__dirname, 'fixtures', 'example.apg'), 'utf8');
+    const fixtureText = fixture();
     const mkDocFile = async (name, ext = 'md', text = fixtureText) => { fs.writeFileSync(path.join(vault, 'Papers', `${name}.${ext}`), text); await waitFor(`!!app.vault.getAbstractFileByPath("Papers/${name}.${ext}")`); };
     const mkImage = rel => ev(`(async () => { const bytes = Uint8Array.from(atob(${JSON.stringify(png.toString('base64'))}), c => c.charCodeAt(0)); const parts = ${JSON.stringify(rel)}.split('/'); parts.pop(); let d = ''; for (const p of parts) { d = d ? d + '/' + p : p; if (!app.vault.getAbstractFileByPath(d)) await app.vault.createFolder(d); } await app.vault.createBinary(${JSON.stringify(rel)}, bytes); })()`);
     // as the user deletes it; where the system's trash does not work (a headless Flatpak), into the vault's .trash
@@ -389,7 +392,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     // 1. a document that was open, with images dropped on it
     await mkDocFile('gone');
     await openDoc('Papers/gone.md');
-    await waitFor('T.qa(".card").length === 32');
+    await waitFor('T.qa(".card").length === 31');
     await dropPng('gone a.png', 250, 650); await dropPng('gone b.png', 650, 650);
     ok(await waitFor(`!!app.vault.getAbstractFileByPath("${FIG}/gone/figures/gone a.png") && !!app.vault.getAbstractFileByPath("${FIG}/gone/figures/gone b.png")`), 'a document has images in its figure subfolder');
     await settle();
@@ -400,7 +403,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     // 2. deleted while it is open: no complaint about a save that cannot happen
     await mkDocFile('gone2');
     await openDoc('Papers/gone2.md');
-    await waitFor('T.qa(".card").length === 32');
+    await waitFor('T.qa(".card").length === 31');
     await dropPng('gone2 a.png', 250, 650);
     await waitFor(`!!app.vault.getAbstractFileByPath("${FIG}/gone2/figures/gone2 a.png")`);
     await typeClaim('Neural implicit shapes', 'Typed just before the delete');
@@ -412,7 +415,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     // 3. an image that a note links to stays, and so does its folder
     await mkDocFile('kept');
     await openDoc('Papers/kept.md');
-    await waitFor('T.qa(".card").length === 32');
+    await waitFor('T.qa(".card").length === 31');
     await dropPng('kept a.png', 250, 650);
     await waitFor(`!!app.vault.getAbstractFileByPath("${FIG}/kept/figures/kept a.png")`);
     fs.writeFileSync(path.join(vault, 'Papers', 'Linker.md'), `Uses it: ![](../${FIG}/kept/figures/kept%20a.png)\n`);
@@ -461,17 +464,20 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     await shot('04-prose');
     ok(await ev('T.q(".ptitle").value').then(v => v.startsWith('Differentiable Signed Distance')), 'title shown');
     ok(await ev('T.qa(".pedit").some(t => t.value.includes("• a bracket"))'), 'bullets are shown as •');
+    ok(await ev('T.qa(".pedit").length === T.qa(".sechead").length + T.qa(".ghead").length'), 'every section and subsection has exactly one text field, whatever the number of its claims');
     const pid = await ev('T.para("c5").id');
-    await ev(`T.q('.prow[data-id="${pid}"] .pedit').scrollIntoView({ block: 'center' })`);
-    let pe = await ev(`T.box(T.q('.prow[data-id="${pid}"] .pedit'))`);
+    await ev(`T.q('.prow[data-ids~="${pid}"] .pedit').scrollIntoView({ block: 'center' })`);
+    let pe = await ev(`T.box(T.q('.prow[data-ids~="${pid}"] .pedit'))`);
     await click(pe.x, pe.y);
+    await ev(`(() => { const t = T.q('.prow[data-ids~="${pid}"] .pedit'); t.setSelectionRange(t.value.length, t.value.length); })()`);
+    await key('Enter'); await key('Enter');   // a blank line: a new paragraph of the text
     await type('Intro line'); await key('Enter');
     await type('- '); await type('first'); await key('Enter'); await type('second'); await key('Enter'); await key('Enter');
     await type('after list');
-    ok((await ev('T.para("c5").text')) === 'Intro line\n- first\n- second\nafter list', 'list typing works inside Obsidian', await ev('T.para("c5").text'));
+    ok((await ev('T.body("c5")')).endsWith('\n\nIntro line\n- first\n- second\nafter list'), 'list typing works inside Obsidian, and a blank line starts a new paragraph', await ev('T.body("c5")'));
     await settle();
     const t1 = disk();
-    ok(t1.includes('<!-- claim: Geometry becomes a tensor expression rather than a file. | id=c5 -->\nIntro line\n- first\n- second\nafter list\n'), 'prose is saved as Markdown');
+    ok(t1.includes('\n\nIntro line\n- first\n- second\nafter list\n'), 'the text is saved as Markdown, a paragraph of its own without a claim');
     ok(Core.serialize(Core.parse(t1)) === t1 && Core.check(t1).length === 0, 'the file round-trips and passes --check', Core.check(t1));
     ok(await ev('app.workspace.getLeavesOfType("archipelago-view")[0].getViewState().state.level') === 'prose', 'the level is part of the tab state (restored with the workspace)');
     await shot('05-prose-edited');
@@ -490,29 +496,40 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     console.log('latex and pdf');
     {
       // a document of its own, so that the other tests keep theirs
-      fs.copyFileSync(path.join(__dirname, 'fixtures', 'example.apg'), path.join(vault, 'Papers', 'tex.md'));
+      fs.writeFileSync(path.join(vault, 'Papers', 'tex.md'), fixture());
       await waitFor('!!app.vault.getAbstractFileByPath("Papers/tex.md")');
       await openDoc('Papers/tex.md');
       const texDisk = () => fs.readFileSync(path.join(vault, 'Papers', 'tex.md'), 'utf8');
       console.log('claims in prose');
       await ev('T.ui().setLevel("prose")');
       await waitFor('!!T.q("#prose")');
-      const rows0 = await ev('T.qa(".prow").length');
+      const rows0 = await ev('T.qa(".mnote").length');
       await ev(`T.qa('.padd button')[0].scrollIntoView({ block: 'center' })`);
       const addB = await ev(`T.box(T.qa('.padd button')[0])`);
       await click(addB.x, addB.y);
-      ok(await waitFor(`T.qa(".prow").length === ${rows0 + 1}`), 'the "+ Add claim" under a section adds a claim with its paragraph');
+      ok(await waitFor(`T.qa(".mnote").length === ${rows0 + 1}`), 'the "+ Add claim" under a section adds a claim');
       ok(await ev('(() => { const a = T.ui().shadow.activeElement; return !!a && !!a.dataset.key && a.dataset.key.startsWith("claim:"); })()'), 'and its claim field has the focus');
       await type('Added in Prose'); await key('Enter');
       ok(await ev('T.ui().shadow.activeElement.classList.contains("pedit")'), 'Enter in the claim goes on to the paragraph');
+      await key('Enter'); await key('Enter');
       await type('Its text.');
       await settle();
-      ok(/<!-- claim: Added in Prose \| id=c\d+ -->\nIts text\.\n/.test(texDisk()), 'it is saved as a claim with its paragraph', texDisk().match(/<!-- claim: Added[^\n]*\n[^\n]*/));
+      ok(/<!-- claim: Added in Prose \| id=c\d+ -->\n/.test(texDisk()) && /\n\nIts text\.\n/.test(texDisk()), 'it is saved as a claim, and the text as a paragraph of the section without one', texDisk().match(/<!-- claim: Added[^\n]*\n[^\n]*/));
       ok(texDisk().indexOf('Added in Prose') < texDisk().indexOf('# Related Work') && texDisk().indexOf('Added in Prose') > texDisk().indexOf('shdfjkhsdjkfhj'), 'at the end of the section it was added to');
       const c1i = await ev('T.ui().S.doc.sections[0].paragraphs.findIndex(p => p.cid === "c1")');
-      await ev(`(() => { const b = T.q('.prow[data-id="' + T.para("c1").id + '"] .padd-after[title="New claim below"]'); b.click(); })()`);
+      await ev(`(() => { const b = T.q('.mnote[data-id="' + T.para("c1").id + '"] .padd-after[title="New claim below"]'); b.click(); })()`);
       ok(await ev(`(() => { const p = T.ui().S.doc.sections[0].paragraphs[${c1i + 1}]; return p.claim === '' && p.text === ''; })()`), 'the + beside a claim adds a new one right below it');
       await ev('T.ui().undo()');
+      {
+        const order = () => ev(`T.ui().S.doc.sections[0].paragraphs.map(p => p.cid).filter(Boolean).slice(0, 4).join()`);
+        const before = await order();
+        const [first, second] = before.split(',');
+        await ev(`T.q('.mnote[data-id="' + T.para("${second}").id + '"] .padd-after[title="Move this claim up"]').click()`);
+        const moved = await order();
+        ok(moved.startsWith(second + ',' + first), 'the ↑ beside a claim moves it up one place', { before, moved });
+        await ev(`T.q('.mnote[data-id="' + T.para("${second}").id + '"] .padd-after[title="Move this claim down"]').click()`);
+        ok(await order() === before, 'and ↓ moves it back');
+      }
       await ev('(() => { const t = T.q(".prow .mnote textarea"); if (t) t.blur(); })()');
       const secs0 = await ev('T.ui().S.doc.sections.length');
       await ev(`T.q('.padd.sec button').scrollIntoView({ block: 'center' })`);
@@ -529,12 +546,14 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await ev('T.ui().setLevel("prose")');
       await waitFor('!!T.q("#prose")');
       const sid2 = await ev('T.para("c2").id');
-      const sel = (a, b) => ev(`(() => { const t = T.q('.prow[data-id="${sid2}"] .pedit'); t.focus(); t.setSelectionRange(${a}, ${b}); })()`);
-      const ctxMenu = () => ev(`(() => { const t = T.q('.prow[data-id="${sid2}"] .pedit'); const r = t.getBoundingClientRect(); t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, composed: true, clientX: r.left + 20, clientY: r.top + 10 })); })()`);
+      // The text of a heading is one field: the paragraph of c2 starts where "A signed" is, after a blank line (or at the start).
+      const base = () => ev(`(() => { const v = T.q('.prow[data-ids~="${sid2}"] .pedit').value, i = v.indexOf('A signed'), j = v.lastIndexOf('\\n\\n', i); return j < 0 ? 0 : j + 2; })()`);
+      const sel = async (a, b) => { const o = await base(); return ev(`(() => { const t = T.q('.prow[data-ids~="${sid2}"] .pedit'); t.focus(); t.setSelectionRange(${o + a}, ${o + b}); })()`); };
+      const ctxMenu = () => ev(`(() => { const t = T.q('.prow[data-ids~="${sid2}"] .pedit'); const r = t.getBoundingClientRect(); t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, composed: true, clientX: r.left + 20, clientY: r.top + 10 })); })()`);
       const pick = (...labels) => ev(`(() => { const labels = ${JSON.stringify(labels)}; for (const [k, l] of labels.entries()) { const it = T.qa('.menu .item').find(i => i.querySelector('.label').textContent === l); if (!it) return false; if (k < labels.length - 1) it.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true })); else it.click(); } return true; })()`);
-      const txt = () => ev('T.para("c2").text');
-      await ev(`T.q('.prow[data-id="${sid2}"] .pwrap').scrollIntoView({ block: 'center' })`);
-      ok(await ev(`getComputedStyle(T.q('.prow[data-id="${sid2}"] .pedit')).opacity`) === '0', 'a paragraph that is not being edited is shown with its styles (its text field lies invisibly on top)');
+      const txt = async () => (await ev('T.body("c2")')).split('\n\n').find(c => c.includes('A signed')) || '';
+      await ev(`T.q('.prow[data-ids~="${sid2}"] .pwrap').scrollIntoView({ block: 'center' })`);
+      ok(await ev(`getComputedStyle(T.q('.prow[data-ids~="${sid2}"] .pedit')).opacity`) === '0', 'a paragraph that is not being edited is shown with its styles (its text field lies invisibly on top)');
       await sel(0, 8);
       await ctxMenu();
       ok(await waitFor(`T.qa('.menu .item').some(i => i.textContent.startsWith('Bold'))`), 'right-click on a selection offers the text styles');
@@ -546,23 +565,23 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await sel(0, 8);
       await ev(`window.__k = []; for (const t of ['keydown']) window.addEventListener(t, e => __k.push(t + ' ' + e.key + ' ctrl=' + e.ctrlKey + ' target=' + (e.composedPath()[0].className || e.composedPath()[0].tagName) + ' prevented=' + e.defaultPrevented), true)`);
       await key('i', CTRL);
-      ok((await txt()).startsWith('*A signed* distance'), 'Ctrl+I makes it italic', { text: (await txt()).slice(0, 40), keys: await ev('window.__k'), active: await ev('(() => { const a = T.ui().shadow.activeElement; return a && a.className; })()'), sel: await ev(`(() => { const t = T.q('.prow[data-id="${sid2}"] .pedit'); return [t.selectionStart, t.selectionEnd]; })()`) });
+      ok((await txt()).startsWith('*A signed* distance'), 'Ctrl+I makes it italic', { text: (await txt()).slice(0, 40), keys: await ev('window.__k'), active: await ev('(() => { const a = T.ui().shadow.activeElement; return a && a.className; })()'), sel: await ev(`(() => { const t = T.q('.prow[data-ids~="${sid2}"] .pedit'); return [t.selectionStart, t.selectionEnd]; })()`) });
       await sel(0, 10); await ctxMenu(); await pick('Strikethrough');
       ok((await txt()).includes('~~'), 'Strikethrough', (await txt()).slice(0, 40));
       await sel(0, (await txt()).indexOf('distance') + 8); await ctxMenu(); await pick('Text color', 'Red');
       ok((await txt()).includes('<span style="color:#e03131">'), 'Text color: red is a <span style="color:…">', (await txt()).slice(0, 80));
-      const w0 = await ev(`T.q('.prow[data-id="${sid2}"] .pedit').value.indexOf('program')`);
-      await sel(w0, w0 + 7); await ctxMenu(); await pick('Highlight', 'Blue');
+      const w0 = (await base()) + (await txt()).indexOf('program');
+      await sel(w0 - await base(), w0 - await base() + 7); await ctxMenu(); await pick('Highlight', 'Blue');
       ok((await txt()).includes('<mark style="background:#a5d8ff">program</mark>'), 'Highlight: blue is a <mark style="background:…">', (await txt()).slice(0, 160));
-      const w1 = await ev(`T.q('.prow[data-id="${sid2}"] .pedit').value.indexOf('composes')`);
-      await sel(w1, w1 + 8); await ctxMenu(); await pick('Highlight', 'Yellow');
+      const w1 = (await base()) + (await txt()).indexOf('composes');
+      await sel(w1 - await base(), w1 - await base() + 8); await ctxMenu(); await pick('Highlight', 'Yellow');
       ok((await txt()).includes('==composes=='), 'yellow is Obsidian\'s ==');
-      const w2 = await ev(`T.q('.prow[data-id="${sid2}"] .pedit').value.indexOf('primitives')`);
-      await sel(w2, w2 + 10); await ctxMenu(); await pick('Comment');
+      const w2 = (await base()) + (await txt()).indexOf('primitives');
+      await sel(w2 - await base(), w2 - await base() + 10); await ctxMenu(); await pick('Comment');
       ok((await txt()).includes('%%primitives%%'), 'Comment is Obsidian\'s %%');
-      await ev(`T.q('.prow[data-id="${sid2}"] .pedit').blur()`);
+      await ev(`T.q('.prow[data-ids~="${sid2}"] .pedit').blur()`);
       await sleep(200);
-      ok(await ev(`(() => { const v = T.q('.prow[data-id="${sid2}"] .pview'); return !!v.querySelector('.r-s') && !!v.querySelector('.r-hl') && !!v.querySelector('.r-c') && !!v.querySelector('span[style*="color"]') && !v.textContent.includes('**') && !v.textContent.includes('<span'); })()`), 'once the field is left, the styles are shown and the markers are not');
+      ok(await ev(`(() => { const v = T.q('.prow[data-ids~="${sid2}"] .pview'); return !!v.querySelector('.r-s') && !!v.querySelector('.r-hl') && !!v.querySelector('.r-c') && !!v.querySelector('span[style*="color"]') && !v.textContent.includes('**') && !v.textContent.includes('<span'); })()`), 'once the field is left, the styles are shown and the markers are not');
       await shot('09-styles-prose');
       await ev('(() => { T.para("c3").claim = "Hard **constraints**, not ==objectives=="; T.ui().setLevel("map"); })()');
       ok(await waitFor(`T.qa('.card .text .r-b').some(e => e.textContent === 'constraints') && T.qa('.card .text .r-hl').some(e => e.textContent === 'objectives')`), 'a claim on the map is shown with its styles too');
@@ -572,13 +591,13 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await sleep(300);
       await ev('T.ui().setLevel("prose")');
       await sel(0, 8); await ctxMenu(); await pick('Bold');
-      await ev(`T.q('.prow[data-id="${sid2}"] .pedit').blur()`);
+      await ev(`T.q('.prow[data-ids~="${sid2}"] .pedit').blur()`);
       await settle();
       ok(texDisk().includes('**A signed** distance program'), 'the styles are saved in the Markdown file', texDisk().match(/A signed[^\n]{0,80}/));
       console.log('names that LaTeX and Overleaf take');
       fs.mkdirSync(path.join(vault, FIG, 'Spaced Name'), { recursive: true });
       fs.writeFileSync(path.join(vault, FIG, 'Spaced Name', 'Spaced Name.bib'), '% from an earlier version\n@book{old1,\n  title = {Old},\n  author = {A},\n  year = {1999}\n}\n');
-      fs.copyFileSync(path.join(__dirname, 'fixtures', 'example.apg'), path.join(vault, 'Papers', 'Spaced Name.md'));
+      fs.writeFileSync(path.join(vault, 'Papers', 'Spaced Name.md'), fixture());
       await waitFor('!!app.vault.getAbstractFileByPath("Papers/Spaced Name.md")');
       await openDoc('Papers/Spaced Name.md');
       ok(await waitFor(`app.vault.adapter.exists("${FIG}/Spaced Name/Spaced_Name.bib")`), 'a document with blanks in its name gets Spaced_Name.bib (BibTeX takes no blanks)');
@@ -596,9 +615,9 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await ev('T.ui().setLevel("prose")');
       await waitFor('!!T.q("#prose")');
       const sid3 = await ev('T.para("c3").id');
-      const focusEnd = () => ev(`(() => { const t = T.q('.prow[data-id="${sid3}"] .pedit'); t.focus(); t.setSelectionRange(t.value.length, t.value.length); })()`);
+      const focusEnd = () => ev(`(() => { const t = T.q('.prow[data-ids~="${sid3}"] .pedit'); t.focus(); t.setSelectionRange(t.value.length, t.value.length); })()`);
       const labels = () => ev(`T.qa('.suggest .si .sl').map(e => e.textContent)`);
-      await ev(`T.q('.prow[data-id="${sid3}"] .pwrap').scrollIntoView({ block: 'center' })`);
+      await ev(`T.q('.prow[data-ids~="${sid3}"] .pwrap').scrollIntoView({ block: 'center' })`);
       await focusEnd(); await type(' See [[Not');
       ok(await waitFor(`T.qa('.suggest .si .sl').some(e => e.textContent === 'Note')`), '[[ offers the notes of the vault', await labels());
       ok(await ev('T.qa(".suggest .si").length') >= 2, 'there is more than one suggestion', await labels());
@@ -608,40 +627,40 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       ok(await ev(`T.qa('.suggest .si').findIndex(e => e.classList.contains('on'))`) === 0, 'up and down');
       const second = await ev(`T.box(T.qa('.suggest .si')[1])`), secondLabel = await ev(`T.qa('.suggest .si .sl')[1].textContent`);
       await click(second.x, second.y);
-      ok(!(await ev('!!T.q(".suggest")')) && (await ev('T.para("c3").text')).includes(`[[`) && (await ev('T.para("c3").text')).includes(secondLabel), 'a click on a suggestion takes that one (the field keeps the focus)', { secondLabel, text: await ev('T.para("c3").text') });
+      ok(!(await ev('!!T.q(".suggest")')) && (await ev('T.body("c3")')).includes(`[[`) && (await ev('T.body("c3")')).includes(secondLabel), 'a click on a suggestion takes that one (the field keeps the focus)', { secondLabel, text: await ev('T.body("c3")') });
       await ev('T.ui().undo(); T.ui().undo()');
       await focusEnd(); await type(' [[Not');
       await waitFor(`T.qa('.suggest .si .sl').some(e => e.textContent === 'Note')`);
       await ev(`(() => { const rows = T.qa('.suggest .si'); const k = rows.findIndex(r => r.querySelector('.sl').textContent === 'Note'); window.__noteRow = k; })()`);
       for (let i = 0; i < await ev('window.__noteRow'); i++) await key('ArrowDown');
       await key('Enter');
-      ok((await ev('T.para("c3").text')).includes('[[Note]]') && !(await ev('!!T.q(".suggest")')), 'Enter takes the one that is marked: [[Note]]', await ev('T.para("c3").text'));
+      ok((await ev('T.body("c3")')).includes('[[Note]]') && !(await ev('!!T.q(".suggest")')), 'Enter takes the one that is marked: [[Note]]', await ev('T.body("c3")'));
       await type(' and [@notek');
       ok(await waitFor(`T.qa('.suggest .si .sl').some(e => e.textContent === 'notekey2025')`), '[@ offers the citation keys (of the .bib files and the literature notes)', await labels());
       await key('Tab');
-      ok((await ev('T.para("c3").text')).endsWith('[@notekey2025'), 'Tab takes it');
+      ok((await ev('T.body("c3")')).endsWith('[@notekey2025'), 'Tab takes it');
       await type('] and [[@notek');
       ok(await waitFor(`T.qa('.suggest .si .sl').some(e => e.textContent === '@notekey2025')`), 'a literature note is offered by its @key', await labels());
       await key('Enter');
-      ok((await ev('T.para("c3").text')).includes('[[Papers/Source/@notekey2025|@notekey2025]]'), 'and inserted as [[path|@key]], which is a citation', await ev('T.para("c3").text'));
+      ok((await ev('T.body("c3")')).includes('[[Papers/Source/@notekey2025|@notekey2025]]'), 'and inserted as [[path|@key]], which is a citation', await ev('T.body("c3")'));
       await type(' x'); await key('Escape');
-      await ev(`T.q('.prow[data-id="${sid3}"] .pedit').blur()`);
+      await ev(`T.q('.prow[data-ids~="${sid3}"] .pedit').blur()`);
       await sleep(200);
-      ok(await ev(`(() => { const v = T.q('.prow[data-id="${sid3}"] .pview'); return v.querySelectorAll('.r-link').length === 2 && v.querySelectorAll('.r-cite').length === 1 && !v.textContent.includes('[['); })()`), 'links are shown as links (a citation as a @key chip) and not as [[…]]');
+      ok(await ev(`(() => { const v = T.q('.prow[data-ids~="${sid3}"] .pview'); return v.querySelectorAll('.r-link').length === 2 && v.querySelectorAll('.r-cite').length === 1 && !v.textContent.includes('[['); })()`), 'links are shown as links (a citation as a @key chip) and not as [[…]]');
       await ev('window.__opened = null; window.__origOpen = app.workspace.openLinkText; app.workspace.openLinkText = (...a) => { window.__opened = a; return Promise.resolve(); }');
-      const lb = await ev(`T.box(T.q('.prow[data-id="${sid3}"] .pview .r-link:not(.r-cite)'))`);
+      const lb = await ev(`T.box(T.q('.prow[data-ids~="${sid3}"] .pview .r-link:not(.r-cite)'))`);
       await click(lb.x, lb.y);
       ok(await ev('window.__opened && window.__opened[0]') === 'Note', 'a click on a link of a shown paragraph opens that note', await ev('window.__opened'));
       await ev('app.workspace.openLinkText = window.__origOpen');
-      ok(await ev(`T.ui().shadow.activeElement !== T.q('.prow[data-id="${sid3}"] .pedit')`), 'without starting to edit the paragraph');
+      ok(await ev(`T.ui().shadow.activeElement !== T.q('.prow[data-ids~="${sid3}"] .pedit')`), 'without starting to edit the paragraph');
       console.log('latex and pdf (continued)');
       await ev('T.ui().setLevel("latex")');
       ok(await waitFor('!!T.q("#latex .texsrc") && T.ui().S.tex.info !== null'), 'LaTeX view');
       await sleep(500); await shot('05-latex');
       let tx = await latex();
       ok(tx.includes('\\documentclass') && tx.includes('\\section{Introduction}') && tx.includes('\\subsection{The gap}'), 'sections and groups become \\section and \\subsection');
-      ok(tx.includes('%% apg c1 | Gradient-based shape optimization') && tx.includes('%% apg s1\n'), 'every piece starts with a marker comment naming its claim or section');
-      ok(tx.includes('\\includegraphics[width=0.85\\linewidth,height=0.45\\textheight,keepaspectratio]{figures/ext_feasibility.png}'), 'a figure from outside the document folder is figures/ext_<name> (it is copied there, so the folder is a complete project)', tx.match(/\\includegraphics[^\n]*/));
+      ok(/%% apg s1\/\d+\n/.test(tx) && tx.includes('%% apg s1\n'), 'every piece starts with a marker comment naming its section or its place in it');
+      ok(/\\includegraphics(\[[^\]]*\])?\{figures\/ext_feasibility\.png\}/.test(tx), 'a figure from outside the document folder is figures/ext_<name> (it is copied there, so the folder is a complete project)', tx.match(/\\includegraphics[^\n]*/));
       ok(tx.includes('projection & 100\\% & 1.0x \\\\') && tx.includes('\\caption{Final feasibility and wall-clock cost per method.}'), 'a table with its % escaped, captioned by its claim');
       ok(tx.includes('\\begin{equation}\nsmin(a, b; k)'), 'an equation as it is');
       ok(!tx.includes('Shape optimization stalls on remeshing'), 'synopses and notes are not part of the paper');
@@ -654,10 +673,10 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await ev('T.ui().setLevel("prose")');
       await waitFor('!!T.q("#prose")');
       const tpid = await ev('T.para("c5").id');
-      await ev(`T.q('.prow[data-id="${tpid}"] .pedit').scrollIntoView({ block: 'center' })`);
-      const tpe = await ev(`T.box(T.q('.prow[data-id="${tpid}"] .pedit'))`);
+      await ev(`T.q('.prow[data-ids~="${tpid}"] .pedit').scrollIntoView({ block: 'center' })`);
+      const tpe = await ev(`T.box(T.q('.prow[data-ids~="${tpid}"] .pedit'))`);
       await click(tpe.x, tpe.y);
-      await ev(`(() => { const t = T.q('.prow[data-id="${tpid}"] .pedit'); t.setSelectionRange(t.value.length, t.value.length); })()`);
+      await ev(`(() => { const t = T.q('.prow[data-ids~="${tpid}"] .pedit'); t.setSelectionRange(t.value.length, t.value.length); })()`);
       await type(' As shown before [@knuth84, p. 7], 50% of_all.');
       await settle();
       await ev('T.ui().setLevel("latex")');
@@ -680,8 +699,8 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await waitFor(`(() => { const f = app.vault.getAbstractFileByPath("Papers/Source/@notekey2025.md"); const c = f && app.metadataCache.getFileCache(f); return !!(c && c.frontmatter && c.frontmatter.citationKey); })()`, 10000);
       await ev('T.ui().setLevel("prose")');
       await waitFor('!!T.q("#prose")');
-      await ev(`T.q('.prow[data-id="${tpid}"] .pedit').focus()`);
-      await ev(`(() => { const t = T.q('.prow[data-id="${tpid}"] .pedit'); t.setSelectionRange(t.value.length, t.value.length); })()`);
+      await ev(`T.q('.prow[data-ids~="${tpid}"] .pedit').focus()`);
+      await ev(`(() => { const t = T.q('.prow[data-ids~="${tpid}"] .pedit'); t.setSelectionRange(t.value.length, t.value.length); })()`);
       await type(' See [[Source/die_gurken/@libkey2025|@libkey2025]] and [[Source/@missing2024|@missing2024]] and [[Source/@notekey2025|@notekey2025]].');
       await settle();
       await ev('T.ui().setLevel("latex")');
@@ -702,7 +721,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       const line = await ev(`T.box(T.qa('.tl').find(r => r.textContent.includes('As shown before')))`);
       await click(line.x, line.y); await click(line.x, line.y, { clickCount: 2 });
       await ev(`(() => { if (T.ui().getLevel() !== 'latex') return; const r = T.qa('.tl').find(r => r.textContent.includes('As shown before')); if (r) r.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, composed: true })); })()`);
-      ok(await waitFor('T.ui().getLevel() === "prose" && T.ui().S.highlight === T.para("c5").id'), 'double-clicking a line shows its paragraph in Prose');
+      ok(await waitFor('T.ui().getLevel() === "prose" && !!T.q(".prow.highlight") && T.q(".prow.highlight .pedit").value.includes("As shown before")'), 'double-clicking a line shows its text in Prose');
       // the PDF: made with Tectonic, in the cache; nothing of the vault is written
       const vaultTexBefore = fs.existsSync(path.join(vault, TEXDIR, 'tex.tex')) ? fs.readFileSync(path.join(vault, TEXDIR, 'tex.tex'), 'utf8') : null;
       const folderListing = () => fs.readdirSync(path.join(vault, TEXDIR), { recursive: true }).map(String).sort().join('|');
@@ -795,14 +814,14 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
         // an error points at its paragraph
         await ev('T.ui().setLevel("prose")');
         await waitFor('!!T.q("#prose")');
-        await ev(`T.q('.prow[data-id="${tpid}"] .pedit').focus()`);
-        await ev(`(() => { const t = T.q('.prow[data-id="${tpid}"] .pedit'); t.setSelectionRange(t.value.length, t.value.length); })()`);
+        await ev(`T.q('.prow[data-ids~="${tpid}"] .pedit').focus()`);
+        await ev(`(() => { const t = T.q('.prow[data-ids~="${tpid}"] .pedit'); t.setSelectionRange(t.value.length, t.value.length); })()`);
         await type(' Broken $\\nosuchmacro$ here.');
         await settle();
         await ev('T.ui().setLevel("pdf")');
         ok(await waitFor('!!T.ui().S.tex.result && !T.ui().S.tex.compiling && T.ui().S.tex.result.tex === T.ui().latexText()', 90000), 'the changed document is compiled again');
         const bad = await ev('(() => { const r = T.ui().S.tex.result; return { ok: r.ok, errors: r.errors }; })()');
-        ok(!bad.ok && bad.errors.some(e => e.key === 'c5' && /Undefined control sequence/.test(e.text)), 'an error is reported with the claim it is in', bad);
+        ok(!bad.ok && bad.errors.some(e => /^s\d+\/\d+$/.test(e.key) && /Undefined control sequence/.test(e.text)), 'an error is reported with the paragraph it is in', bad);
         ok(await ev('T.qa(".tn.error").length > 0 && T.qa(".pages canvas").length > 0'), 'the error shows above the last PDF, which stays');
         await ev('T.qa(".tn.error .where").find(e => e.textContent.startsWith("line")).click()');
         ok(await waitFor('T.ui().getLevel() === "latex" && T.qa(".tl.err").some(r => r.textContent.includes("nosuchmacro"))'), 'clicking it shows the line in the LaTeX view, marked');
@@ -827,7 +846,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     console.log('the way back: a .tex edited elsewhere');
     {
       const latex = () => ev('T.ui().latexText()');
-      fs.copyFileSync(path.join(__dirname, 'fixtures', 'example.apg'), path.join(vault, 'Papers', 'back.md'));
+      fs.writeFileSync(path.join(vault, 'Papers', 'back.md'), fixture());
       await waitFor('!!app.vault.getAbstractFileByPath("Papers/back.md")');
       await openDoc('Papers/back.md');
       const texFile = path.join(vault, FIG, 'back', 'back.tex'), backDisk = () => fs.readFileSync(path.join(vault, 'Papers', 'back.md'), 'utf8');
@@ -839,12 +858,12 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await ev('T.ui().setLevel("prose")'); await ev('T.ui().setLevel("latex")');
       ok(await waitFor('T.qa(".tn.outside").length === 1'), 'a .tex that another editor changed is noticed in the LaTeX view');
       await ev('T.q(".tn.outside").click()');
-      ok(await waitFor('T.para("c1").text.includes("(**edited outside**)")'), 'taking it over puts the change into the paragraph, as Markdown', await ev('T.para("c1").text'));
+      ok(await waitFor('T.body("c1").includes("(**edited outside**)")'), 'taking it over puts the change into the paragraph, as Markdown', await ev('T.body("c1")'));
       await settle();
       ok(backDisk().includes('Modern optimizers (**edited outside**) can handle') && Core.check(backDisk()).length === 0, 'and into the document file');
       ok(fs.readFileSync(texFile, 'utf8') === await latex() && !(await ev('T.qa(".tn.outside").length')), 'the .tex is the LaTeX view again, and nothing is left to take over');
       await ev('T.ui().undo()');
-      ok(!(await ev('T.para("c1").text')).includes('edited outside'), 'one undo takes it back');
+      ok(!(await ev('T.body("c1")')).includes('edited outside'), 'one undo takes it back');
       fs.writeFileSync(texFile, fs.readFileSync(texFile, 'utf8').replace('A signed distance program composes', 'A signed distance program (outside again) composes'));
       // making a PDF writes nothing, so it has nothing to ask; the zip (and the sync) write the .tex, so they ask first
       await ev('T.ui().setLevel("latex")'); await waitFor('!!T.q("#latex .texsrc")');
@@ -852,7 +871,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await ev(`T.qa('.menu .item').find(i => i.textContent.startsWith('Download')).click()`);
       ok(await waitFor('[...document.querySelectorAll(".modal-container")].some(m => m.textContent.includes("changed outside"))', 10000), 'writing the .tex (the zip, the sync) over one that was changed elsewhere asks first, instead of overwriting it');
       await ev(`[...document.querySelectorAll('.modal-container button')].find(b => b.textContent === 'Take them over').click()`);
-      ok(await waitFor('T.para("c2").text.includes("(outside again)")'), 'and takes the changes over when asked to');
+      ok(await waitFor('T.body("c2").includes("(outside again)")'), 'and takes the changes over when asked to');
       await waitFor('!T.ui().S.tex.compiling', 90000);
       await openDoc(DOC);
       await trashDoc('Papers/back.md');
@@ -863,7 +882,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       const bare = path.join(work, 'overleaf.git'), olc = path.join(work, 'olc'), url = 'file://' + bare;
       const g = (...a) => spawnSync('git', a, { encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'O', GIT_AUTHOR_EMAIL: 'o@x', GIT_COMMITTER_NAME: 'O', GIT_COMMITTER_EMAIL: 'o@x' } });
       g('init', '--bare', '-q', '-b', 'master', bare);
-      const text = fs.readFileSync(path.join(__dirname, 'fixtures', 'example.apg'), 'utf8').replace('---\n', `---\noverleaf: ${url}\n`);
+      const text = fixture().replace('---\n', `---\noverleaf: ${url}\n`);
       fs.writeFileSync(path.join(vault, 'Papers', 'ol.md'), text);
       await waitFor('!!app.vault.getAbstractFileByPath("Papers/ol.md")');
       await openDoc('Papers/ol.md');
@@ -880,12 +899,12 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       g('-C', olc, 'commit', '-qam', 'edit on Overleaf'); g('-C', olc, 'push', '-q');
       await ev('T.ui().S.status = ""; T.ui().syncOverleaf(); true');
       st = await synced();
-      ok(st.startsWith('Synced') && (await ev('T.para("c2").text')).includes('A signed distance program, edited on *Overleaf*, composes'), 'the next sync takes the edit from Overleaf into the paragraph', { st, text: await ev('T.para("c2").text') });
+      ok(st.startsWith('Synced') && (await ev('T.body("c2")')).includes('A signed distance program, edited on *Overleaf*, composes'), 'the next sync takes the edit from Overleaf into the paragraph', { st, text: await ev('T.body("c2")') });
       await settle();
       ok(olDisk().includes('edited on *Overleaf*'), 'and into the document file');
       // the same sentence changed on both sides
       fs.writeFileSync(path.join(vault, 'Papers', 'ol.md'), olDisk().replace('Modern optimizers can handle', 'Modern optimizers here can handle'));
-      await waitFor('T.para("c1").text.includes("here can handle")');
+      await waitFor('T.body("c1").includes("here can handle")');
       g('-C', olc, 'pull', '-q');
       fs.writeFileSync(olTex, fs.readFileSync(olTex, 'utf8').replace('Modern optimizers can handle', 'Modern optimizers there can handle'));
       g('-C', olc, 'commit', '-qam', 'the same sentence'); g('-C', olc, 'push', '-q');
@@ -893,7 +912,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       ok(await waitFor('[...document.querySelectorAll(".modal-container")].some(m => m.textContent.includes("Changed here and on Overleaf"))', 30000), 'a change on both sides asks which one wins');
       await ev(`[...document.querySelectorAll('.modal-container button')].find(b => b.textContent === "Overleaf's").click()`);
       st = await synced();
-      ok(st.startsWith('Synced') && (await ev('T.para("c1").text')).includes('there can handle'), 'Overleaf\'s wins where it was chosen', { st, text: await ev('T.para("c1").text') });
+      ok(st.startsWith('Synced') && (await ev('T.body("c1")')).includes('there can handle'), 'Overleaf\'s wins where it was chosen', { st, text: await ev('T.body("c1")') });
       g('-C', olc, 'pull', '-q');
       const back = fs.readFileSync(olTex, 'utf8');
       ok(back.includes('there can handle') && back.includes('edited on \\emph{Overleaf}') && back.includes('%% apg c1'), 'and Overleaf has the document\'s .tex, with its markers');
@@ -938,7 +957,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await waitFor('!!T.q(".texedit")');
       await ev(`(() => { const t = T.q('.texedit'); t.value = t.value.replace('A signed distance program, edited on \\\\emph{Overleaf}', 'A signed distance program, edited in the view'); t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
       await ev('[...T.qa(".texbar .tb")].find(b => b.textContent === "Apply").click()');
-      await waitFor('T.para("c2").text.includes("edited in the view")');
+      await waitFor('T.body("c2").includes("edited in the view")');
       ok(!(await ev('!!T.q(".texedit")')), 'editing the LaTeX in its view and applying takes the text into the paragraph');
       await ev('T.ui().setLevel("latex")');
       await openDoc(DOC);
@@ -947,10 +966,10 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
 
     console.log('subsections');
     {
-      fs.copyFileSync(path.join(__dirname, 'fixtures', 'example.apg'), path.join(vault, 'Papers', 'nest.md'));
+      fs.writeFileSync(path.join(vault, 'Papers', 'nest.md'), fixture());
       await waitFor('!!app.vault.getAbstractFileByPath("Papers/nest.md")');
       await openDoc('Papers/nest.md');
-      await waitFor('T.qa(".card").length === 32');
+      await waitFor('T.qa(".card").length === 31');
       await ev('T.ui().shadow.host.ownerDocument.defaultView.confirm = () => true');
       const nestDisk = () => fs.readFileSync(path.join(vault, 'Papers', 'nest.md'), 'utf8');
       const levels = () => Core.parse(nestDisk()).sections.flatMap(sc => sc.paragraphs.filter(p => Core.kind(p) === 'group').map(p => Core.level(p)));
@@ -961,9 +980,8 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await menuFor(`T.card('Hard constraints, not objectives')`);
       await clickExpand();
       await settle();
-      ok(/^### Hard constraints, not objectives, are the open problem\.\n<!-- subsection: \| id=c3 -->/m.test(nestDisk()), 'Expand into Subsection turns a claim in a group into a ### subsection that keeps its id', nestDisk().match(/^###[^\n]*\n[^\n]*/m));
+      ok(/^### Hard constraints, not objectives, are the open problem\.\n<!-- subsection: \| id=c3 -->/m.test(nestDisk()), 'Expand into Subsection turns a claim in a group into a ### subsection that keeps its id', JSON.stringify(nestDisk().split('\n').filter(l => /Hard constr|^#|subsection/.test(l))));
       ok(await ev('T.qa(".region").length') === regions0 + 1 && await ev('T.qa("#noodles .hit").length') === noodles0, 'it is a nested region on the map, and the links of the claim still draw (the heading is their end now)', { regions: await ev('T.qa(".region").length'), noodles: await ev('T.qa("#noodles .hit").length') });
-      ok(await ev(`T.qa('.card .text.empty').length`) >= 1, 'and its prose is the first paragraph inside, as a card without a claim yet');
       // deeper: level 4, level 5, and no level 6
       for (const lvl of [4, 5]) {
         await menuFor(`T.box(T.qa('.card').find(c => c.querySelector('.text.empty') && c.textContent.includes('no claim') ))`);
@@ -1075,16 +1093,16 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       // the switch of a block: an island (or a free-floating block) that is off is not in the paper
       const bgIsland = () => `T.qa('.island').find(i => i.querySelector('.head').textContent.includes('Background'))`;
       ok(await ev(`T.qa('.island').every(i => !!i.querySelector('.head .bsw.on'))`) && await ev(`T.qa('.card.block').every(c => !!c.querySelector('.bsw.on'))`), 'every island and every free-floating block has a switch, on at first');
-      const c10text = (await ev('T.para("c10").text')).slice(0, 30);
+      const c10text = (await ev('T.body("c10")')).slice(0, 30);
       await ev(`${bgIsland()}.querySelector('.bsw').click()`);
       await settle();
       ok(/^inactive: .*s3/m.test(nestDisk()) && await ev(`${bgIsland()}.classList.contains('off')`) && Core.check(nestDisk()).length === 0, 'switching an island off is saved in the front matter and dims it', nestDisk().match(/^inactive:.*$/m));
       ok(await ev(`T.qa('.card.pulled').some(c => c.textContent.includes('A signed distance function'))`), 'the claim that a claim of an island that is on needs is marked as shown');
       let tex = await ev('T.ui().latexText()');
-      ok(!tex.includes('\\section{Background}') && !tex.includes('%% apg c13') && !tex.includes('%% apg c14') && tex.includes('%% apg c10 ') && tex.includes('%% apg c11 ') && tex.includes(c10text) && tex.indexOf(c10text) > tex.indexOf('%% apg c15 ') && tex.indexOf('%% apg c11 ') > tex.indexOf('%% apg c27 '), 'the LaTeX has no section for it, the claims that are not needed are left out, and the ones that are needed (c10 by c15, c11 by c27) follow the claim that needs them', tex.match(/%% apg c1[0-4] /g));
+      ok(!tex.includes('\\section{Background}') && !tex.includes('%% apg c13') && !tex.includes('%% apg c14') && !tex.includes(c10text), 'the LaTeX has no section for it, and nothing of its text (a claim has no paragraph of its own: the text belongs to the heading)');
       await ev('T.ui().setLevel("prose")'); await waitFor('!!T.q("#prose")');
       ok(!(await ev(`T.qa('.sechead input').map(i => i.value).join()`)).includes('Background') && (await ev(`T.qa('.sechead input').map(i => i.value).join()`)).includes('Method'), 'Prose does not show the island that is off');
-      ok(await ev(`T.qa('.prow.pulled').length === 2 && T.qa('.prow.pulled .pulled-from').every(e => e.textContent.includes('Background'))`) && await ev(`(() => { const r = T.qa('.prow.pulled').find(x => x.dataset.id === T.para('c10').id), prev = r && r.previousElementSibling; return !!prev && prev.textContent.includes('Constraints are expressed'); })()`), 'the claims that are needed are in Prose below the claim that needs them, with where they come from', await ev(`T.qa('.prow.pulled').length`));
+      ok(await ev(`T.qa('.mnote .pulled-from').length === 2 && T.qa('.mnote .pulled-from').every(e => e.textContent.includes('Background'))`) && await ev(`(() => { const r = T.qa('.mnote').find(x => x.dataset.id === T.para('c10').id), prev = r && r.previousElementSibling; return !!prev && prev.textContent.includes('Constraints are expressed'); })()`), 'the claims that are needed are in Prose below the claim that needs them, with where they come from');
       await ev('T.ui().setLevel("map")'); await waitFor('!!T.q("#map")');
       await ev(`${bgIsland()}.querySelector('.bsw').click()`);
       await settle();
@@ -1252,7 +1270,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     };
     await openIn('Papers/second.md');
     ok(await viewType() === 'archipelago-view', 'a Markdown file with the format line opens as a document');
-    ok(await waitFor('!!T.q(".island") && T.qa(".card").length === 32'), 'with its map');
+    ok(await waitFor('!!T.q(".island") && T.qa(".card").length === 31'), 'with its map');
     const headings = () => ev('(() => { const c = app.metadataCache.getFileCache(app.vault.getAbstractFileByPath("Papers/second.md")); return c && c.headings ? c.headings.map(h => h.heading).join() : null; })()');
     await waitFor('(() => { const c = app.metadataCache.getFileCache(app.vault.getAbstractFileByPath("Papers/second.md")); return !!(c && c.headings); })()', 8000);
     ok(await headings() === 'Introduction,The gap,Related Work,Background,Method,Projection step,Experiments,Discussion', 'Obsidian still reads its sections and groups as headings (outline, search)', await headings());
@@ -1281,7 +1299,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     ok(await viewType() === 'archipelago-view', 'tabs that opened as notes before the plugin was there are switched over');
     {
       // a legacy .apg document (whatever the run's own documents are) can be changed to Markdown
-      fs.copyFileSync(path.join(__dirname, 'fixtures', 'example.apg'), path.join(vault, 'Papers', 'legacy.apg'));
+      fs.writeFileSync(path.join(vault, 'Papers', 'legacy.apg'), fixture());
       await waitFor('!!app.vault.getAbstractFileByPath("Papers/legacy.apg")');
       await openIn('Papers/legacy.apg');
       const before = fs.readFileSync(path.join(vault, 'Papers', 'legacy.apg'), 'utf8');
@@ -1314,7 +1332,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     ok(noteUnchanged('Alone', loneText), 'and does not change it');
     await ev('(async () => { await app.workspace.getMostRecentLeaf().history.back(); })()');
     await sleep(1200);
-    ok(await viewType() === 'archipelago-view' && await waitFor('T.qa(".card").length === 32'), '"back" returns to the document');
+    ok(await viewType() === 'archipelago-view' && await waitFor('T.qa(".card").length === 31'), '"back" returns to the document');
     // 3. a note that was forced into the document view is sent back to the note view and left alone
     await ev(`(async () => { const l = app.workspace.getMostRecentLeaf(); await l.setViewState({ type: 'archipelago-view', state: { file: 'Papers/Index.md' } }); })()`);
     await sleep(2500);
@@ -1401,12 +1419,12 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     ok(await ev('document.body.textContent.includes("unsaved changes are kept")'), 'and a message says where');
     await ev(`(async () => { for (const f of app.vault.getFiles().filter(f => f.path.startsWith("Papers/example (unsaved changes"))) await app.vault.delete(f); })()`);
     // Windows line endings
-    const crlf = fs.readFileSync(path.join(__dirname, 'fixtures', 'example.apg'), 'utf8').replaceAll('\n', '\r\n');
+    const crlf = fixture().replaceAll('\n', '\r\n');
     fs.writeFileSync(path.join(vault, 'Papers', 'crlf.md'), crlf);
     await waitFor('!!app.vault.getAbstractFileByPath("Papers/crlf.md")');
     await ev('app.plugins.plugins.archipelago.settings.autosaveSeconds = 0.5');
     await openIn('Papers/crlf.md');
-    ok(await waitFor('T.qa(".card").length === 32'), 'a document with Windows line endings opens');
+    ok(await waitFor('T.qa(".card").length === 31'), 'a document with Windows line endings opens');
     await sleep(1500);
     ok(fs.readFileSync(path.join(vault, 'Papers', 'crlf.md'), 'utf8') === crlf, 'and is not rewritten just by opening it');
     await editClaimTo('Neural implicit shapes', 'Edited on Windows');
@@ -1459,7 +1477,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     // Obsidian loads background tabs only when they are shown; showing this one is what a user does.
     await ev(`(async () => { for (const l of app.workspace.getLeavesOfType('archipelago-view')) { await l.loadIfDeferred(); app.workspace.setActiveLeaf(l, { focus: true }); } })()`);
     await ev(`window.T = { cards: () => { const l = app.workspace.getLeavesOfType('archipelago-view').find(l => l.view.ui && l.view.file && l.view.file.path === 'Papers/second.md'); return l ? l.view.ui.shadow.querySelectorAll('.card').length : -1; } }`);
-    ok(await waitFor('T.cards() === 32', 15000), 'and shows its map', await ev('T.cards()'));
+    ok(await waitFor('T.cards() === 31', 15000), 'and shows its map', await ev('T.cards()'));
 
     console.log('errors');
     const errs = logs.filter(l => /archipelago|plugin:/i.test(l) || l.startsWith('EXCEPTION'));

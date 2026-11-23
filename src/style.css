@@ -344,3 +344,7 @@ button { cursor: default; box-shadow: none; }
 .card.pulled { opacity: 1; border-left: 3px solid var(--accent); }
 .mnote .pulled-from { font-size: 9px; font-weight: 600; letter-spacing: 0.4px; color: var(--tertiary); }
 .prow.pulled .hl { background: rgba(var(--hue), 0.05); }
+
+/* the claims of a heading, a list beside its one text */
+.mcol { flex: none; display: flex; flex-direction: column; gap: 10px; min-width: 216px; }
+.prow.rgrow { padding-bottom: 14px; }
