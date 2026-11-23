@@ -940,6 +940,13 @@ module.exports = class ArchipelagoPlugin extends Plugin {
         assets.set(dest, f.path);
         return dest;
       },
+      /** The physical width in inches of a figure of the document (``Latex.imageWidthIn``: a PNG with a resolution, a PDF),
+       *  or null when unknown; a figure that knows its width is placed at it, a wide one across both columns. */
+      figureWidthIn: rel => {
+        const f = findImage(app, doc, rel);
+        if (!f || !app.vault.adapter.getFullPath) return null;
+        try { return Latex.imageWidthIn(require('fs').readFileSync(app.vault.adapter.getFullPath(f.path)), f.extension); } catch { return null; }
+      },
       prepareProject: () => plugin.prepareProject(doc, assets),
       /** Make the PDF from `tex` in the cache of this computer. Nothing is written into the vault. `bib`: entries the folder's .bib
        *  does not have yet (see pendingBib). */
