@@ -65,5 +65,33 @@ ok(mg.conflicts === 0 && mg.text.includes('### Projection step (renamed)') && mg
 ok(C.mergeDocs(base, ours, nested.replace('| id=c5 needs=c1 -->', '| id=c5 needs=c1,c6 -->')).conflicts === 1, 'but the title and the subsection line are neighbours: a change to both sides is one conflict');
 ok(C.renameIds('<!-- subsection: id=c3 in practice | id=c3 -->', new Map([['c3', 'c9']])) === '<!-- subsection: id=c3 in practice | id=c9 -->', 'an id rename does not touch the text of a subsection line');
 
+console.log('the text of a heading');
+{
+  const src = '<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\n<!-- claim: one | id=c1 -->\nText one.\n\n<!-- claim: two | id=c2 -->\nText two.\n\n## Sub\n\n<!-- claim: three | id=c3 -->\nText three.\n\n<!-- endgroup -->\n\nLoose after.\n';
+  const d = C.parse(src), s = d.sections[0];
+  ok(C.normalizeText(d) === true, 'a document with prose in its claims is brought to one text per heading');
+  const out = C.serialize(d);
+  ok(C.getText(s, '') === 'Text one.\n\nText two.\n\nLoose after.' && C.getText(s, s.paragraphs.find(p => C.kind(p) === 'group').id) === 'Text three.', 'the paragraphs of a heading are its text, in order (what lay after the subsection too)', C.getText(s, ''));
+  ok(s.paragraphs.filter(C.isCard).length === 3 && s.paragraphs.filter(C.isCard).every(p => p.text === ''), 'the claims stay, without prose, and are the only cards');
+  ok(C.normalizeText(C.parse(out)) === false && C.serialize(C.parse(out)) === out && C.check(out).length === 0, 'the result stays as it is (nothing changes at the next opening) and passes --check');
+  ok(C.setText(s, '', 'A\n\n\nB\n\nC') && C.getText(s, '') === 'A\n\nB\n\nC' && s.paragraphs.filter(C.isText).length === 4, 'setText: a blank line makes a paragraph, more are added after the last of the heading, nothing leaks into the subsection');
+  const keep = s.paragraphs.filter(C.isText)[0];
+  C.setText(s, '', 'A2\n\nB');
+  ok(C.getText(s, '') === 'A2\n\nB' && s.paragraphs.includes(keep) && s.paragraphs.filter(C.isText).length === 3, 'and the paragraphs that are there are reused (so their places stay), surplus ones are dropped');
+  C.setText(s, '', '');
+  ok(C.getText(s, '') === '' && s.paragraphs.filter(C.isCard).length === 3, 'an empty text removes its paragraphs, not the claims');
+}
+
+console.log('two island lines');
+{
+  const two = '<!-- archipelago v1 -->\n# A\n<!-- island: id=s9 x=-66 y=-378 -->\n<!-- island: id=s9 x=451 y=-310 -->\n\n<!-- claim: a | id=c1 -->\n';
+  const d = C.parse(two);
+  ok(d.sections[0].island.x === -66 && d.sections[0].sid === 's9', 'of two island lines (merged edits) the first counts: it is the one that is rewritten when the island moves');
+  d.sections[0].island = { x: 5, y: 6 };
+  const out = C.serialize(d);
+  ok((out.match(/<!-- island:/g) || []).length === 1 && C.parse(out).sections[0].island.x === 5, 'a moved island stays where it was put (no stale second line brings it back)');
+  ok((C.serialize(C.parse(two)).match(/<!-- island:/g) || []).length === 1, 'and the second line is gone when the document is written');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
