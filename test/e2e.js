@@ -963,6 +963,30 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       await dragTo(stripSub, { x: target.x, y: target.y + 4 });
       await settle();
       ok(levels().length === n1 + 1 && Core.check(nestDisk()).length === 0, 'a subsection can be dragged onto an island from the template strip', levels());
+      // a subsection is selected by a click on its label, and Delete removes it with its contents
+      await ev(`T.qa('.island')[0].querySelector('.add.sub').click()`);
+      await waitFor(`T.ui().S.editingGroup !== null`);
+      await type('Temp subsection'); await key('Enter');
+      await settle();
+      const nTemp = levels().length;
+      const tl = await ev(`T.box(T.qa('.glabel').find(l => l.textContent === 'Temp subsection'))`);
+      await click(tl.x, tl.y);
+      ok(await ev(`T.ui().S.selection.size === 1 && T.qa('.region.selected .glabel').map(l => l.textContent).join() === 'Temp subsection'`) && await ev('T.ui().S.editingGroup === null'), 'a click on the label of a subsection selects it (and does not rename it)');
+      await click(tl.x, tl.y);
+      ok(await waitFor('T.ui().S.editingGroup !== null'), 'a double click renames it');
+      await key('Escape');
+      await click(tl.x, tl.y);
+      await key('Delete');
+      await settle();
+      ok(!nestDisk().includes('Temp subsection') && levels().length === nTemp - 1 && Core.check(nestDisk()).length === 0, 'Delete removes the selected subsection', nestDisk().match(/^#{2,5} [^\n]*/gm));
+      await ev('T.ui().undo()');
+      await settle();
+      ok(nestDisk().includes('Temp subsection'), 'and one undo brings it back');
+      const tl2 = await ev(`T.box(T.qa('.glabel').find(l => l.textContent === 'Temp subsection'))`);
+      await click(tl2.x, tl2.y);
+      await ev('T.ui().ungroup()');
+      await settle();
+      ok(!nestDisk().includes('Temp subsection') && Core.check(nestDisk()).length === 0, 'Ctrl+Shift+G on a selected subsection removes it (its contents stay)');
       // text styles on the map: the whole claim, from the menu of its card and with Ctrl+B
       const c4m = await ev(`T.card('We contribute a projection layer')`);
       await click(c4m.x, c4m.y);

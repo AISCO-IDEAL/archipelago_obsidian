@@ -845,7 +845,11 @@ function ungroupSelection() {
   const gids = [];
   for (const s of S.doc.sections) {
     const of = C.groupOf(s);
-    s.paragraphs.forEach((p, k) => { if (S.selection.has(p.id) && of[k] !== null && !gids.includes(of[k])) gids.push(of[k]); });
+    s.paragraphs.forEach((p, k) => {
+      // a selected subsection itself, or the innermost one that holds a selected card
+      const g = S.selection.has(p.id) && C.kind(p) === 'group' ? p.id : S.selection.has(p.id) ? of[k] : null;
+      if (g && !gids.includes(g)) gids.push(g);
+    });
   }
   act(() => gids.forEach(removeGroup));
 }
@@ -866,7 +870,20 @@ function objectsIn(r) {
 /** Delete the selection; a section takes its claims with it, links touching removed claims go too. */
 function deleteSelection() {
   if (!S.selection.size) return;
-  const sel = S.selection;
+  // a selected subsection goes with everything in it (as a selected island does)
+  const sel = new Set(S.selection);
+  let prose = 0, claims = 0;
+  for (const s of S.doc.sections) {
+    if (sel.has(s.id)) continue;
+    for (const p of [...s.paragraphs]) {
+      if (!S.selection.has(p.id) || C.kind(p) !== 'group') continue;
+      for (const q of s.paragraphs.slice(s.paragraphs.indexOf(p), C.subtreeEnd(s, p.id) ?? s.paragraphs.length)) {
+        if (!sel.has(q.id) && C.isCard(q)) { claims++; if (C.trimmed(q.text) !== '') prose++; }
+        sel.add(q.id);
+      }
+    }
+  }
+  if (prose && !win().confirm(`Delete this subsection with ${claims} claims, ${prose} of them with prose?`)) return;
   act(() => {
     const gone = new Set();
     for (const s of S.doc.sections) if (sel.has(s.id)) { s.paragraphs.forEach(p => gone.add(p.cid)); gone.add(s.sid); }
@@ -1479,7 +1496,7 @@ function islandEl(s, i) {
       inp.addEventListener('blur', () => { if (!rendering) commit(); });
       region.append(inp);
     } else {
-      const label = h('div', { class: 'glabel', title: p.claim ? p.claim + ' (click to rename)' : 'Click to rename', data: { gid } }, C.groupName(p) || 'Untitled group');
+      const label = h('div', { class: 'glabel', title: (p.claim ? p.claim + '\n' : '') + 'Click to select, double-click to rename, right-click for more', data: { gid } }, C.groupName(p) || 'Untitled group');
       label.addEventListener('contextmenu', e => {
         e.preventDefault(); e.stopPropagation();
         showMenu(e.clientX, e.clientY, [
@@ -1516,8 +1533,15 @@ function islandEl(s, i) {
     },
     end: () => { if (S.groupDrag) endGroupDrag(); else endIslandDrag(); },
     click: (ev, tgt) => {
+      // a click on a subsection's label selects it (Delete removes it with its contents, Ctrl+Shift+G keeps the contents); a double click renames it
       const label = tgt.closest && tgt.closest('.glabel');
-      if (label) { S.editingGroup = label.dataset.gid; requestRender(); return; }
+      if (label) {
+        const gid = label.dataset.gid;
+        if (isDoubleTap('group:' + gid)) { S.editingGroup = gid; requestRender(); return; }
+        select(gid, ev.shiftKey);
+        layoutMap();
+        return;
+      }
       const onTitle = tgt.closest && tgt.closest('.head');
       if (onTitle && isDoubleTap('title:' + id)) { S.editingTitle = id; requestRender(); return; }
       if (!onTitle) isDoubleTap('');
@@ -1793,6 +1817,7 @@ function layoutMap() {
     for (const g of lay.groups) {
       const rg = regionEls.get(g.id);
       if (!rg) continue;
+      rg.classList.toggle('selected', S.selection.has(g.id));
       // The island's 1 px border shifts its children.
       rg.style.left = (g.rect.x - o.x - 1) + 'px'; rg.style.top = (g.rect.y - o.y - 1) + 'px';
       rg.style.width = g.rect.w + 'px'; rg.style.height = g.rect.h + 'px';

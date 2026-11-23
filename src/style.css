@@ -81,6 +81,7 @@ button { cursor: default; box-shadow: none; }
 .island .add:hover { color: rgb(var(--hue)); }
 .region { position: absolute; border-radius: 10px; background: linear-gradient(rgba(var(--hue), 0.07), rgba(var(--hue), 0.07)), var(--group);
   border: 1px solid rgba(var(--hue), 0.28); pointer-events: none; }
+.region.selected { box-shadow: 0 0 0 2px var(--accent); }
 .region .glabel { pointer-events: auto; display: inline-block; max-width: 100%; height: 26px; line-height: 26px; padding: 0 10px;
   font-size: 11px; font-weight: 600; color: rgba(var(--hue), 0.95); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .region input { pointer-events: auto; width: calc(100% - 20px); max-width: 252px; height: 26px; margin: 0 10px; font-size: 11px; font-weight: 600;
