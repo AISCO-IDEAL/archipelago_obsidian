@@ -1005,19 +1005,20 @@ function cardAt(w) {
 }
 
 /** Bezier control points of the noodle from card `a` to card `b`: leave toward the
- *  target's side; cards in one column loop out to the right. */
+ *  target's side; cards in one column loop out to the right. A link starts and ends at the port (the dot on a card's right
+ *  edge, which covers the wire's end); `g` is the gap at a card's left edge, where there is no port. */
 function noodleControls(a, b, g) {
   const aMax = a.x + a.w, bMax = b.x + b.w;
   if (b.x > aMax + 20) {
-    const p0 = { x: aMax + g, y: midY(a) }, p3 = { x: b.x - g, y: midY(b) };
+    const p0 = { x: aMax, y: midY(a) }, p3 = { x: b.x - g, y: midY(b) };
     const dx = Math.max(50, (p3.x - p0.x) * 0.5);
     return [p0, { x: p0.x + dx, y: p0.y }, { x: p3.x - dx, y: p3.y }, p3];
   } else if (bMax < a.x - 20) {
-    const p0 = { x: a.x - g, y: midY(a) }, p3 = { x: bMax + g, y: midY(b) };
+    const p0 = { x: a.x - g, y: midY(a) }, p3 = { x: bMax, y: midY(b) };
     const dx = Math.max(50, (p0.x - p3.x) * 0.5);
     return [p0, { x: p0.x - dx, y: p0.y }, { x: p3.x + dx, y: p3.y }, p3];
   }
-  const p0 = { x: aMax + g, y: midY(a) }, p3 = { x: bMax + g, y: midY(b) };
+  const p0 = { x: aMax, y: midY(a) }, p3 = { x: bMax, y: midY(b) };
   const x = Math.max(p0.x, p3.x) + 45 + Math.abs(p3.y - p0.y) * 0.3;
   return [p0, { x, y: p0.y }, { x, y: p3.y }, p3];
 }
@@ -1303,7 +1304,7 @@ function conflictCard(c) {
 
 // ---- map ----
 
-let mapEl = null, worldA, worldB, noodleSvg, ghostEl, marqueeEl, stripEl, resizeObs = null;
+let mapEl = null, worldA, worldB, noodleSvg, ghostEl, marqueeEl, stripEl, resizeObs = null, observed = new WeakSet();
 const cardEls = new Map(), islandEls = new Map(), regionEls = new Map();
 
 const local = e => { const r = mapEl.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
@@ -1458,6 +1459,7 @@ function switchId(id, create) {
   return p ? p.cid : '';
 }
 const isOn = id => { const k = switchId(id); return !k || !C.inactiveIds(S.doc).has(k); };
+  observed = new WeakSet();
 
 /** Put an island or a free-floating block into the paper, or leave it out (Prose and LaTeX do not show it). */
 function setOn(id, on) {
@@ -1849,7 +1851,11 @@ function layoutMap() {
     });
   }
   for (const it of S.doc.unplaced) { const el = cardEls.get(it.id); if (el) el.style.width = L.ideaW + 'px'; }
-  for (const [id, el] of cardEls) S.heights[id] = el.offsetHeight;
+  for (const [id, el] of cardEls) {
+    S.heights[id] = el.offsetHeight;
+    // A card grows or shrinks on its own (links rendered, fonts loaded): the noodles must follow.
+    if (resizeObs && !observed.has(el)) { observed.add(el); resizeObs.observe(el); }
+  }
   if (S.needsFit) { fitAll(); settleFit(); }
 
   const fr = frames();
