@@ -2162,6 +2162,21 @@ function paragraphEditor(p) {
   return h('div', { class: 'pwrap' }, view, ta);
 }
 
+/** A claim field of Prose, shown with its styles and links until it is focused, as the paragraphs are: the text field lies
+ *  invisibly on top, and a click on a link opens it. `cls` is given to the shown text too, so both look the same. */
+function richClaim(ta, cls) {
+  const view = h('div', { class: 'cview ' + (cls || '') });
+  const paint = () => view.replaceChildren(...(ta.value ? richNodes(ta.value) : [h('span', { class: 'ph' }, ta.placeholder)]));
+  paint();
+  ta.addEventListener('input', paint);
+  ta.addEventListener('mousedown', e => {
+    if (e.button !== 0 || shadow.activeElement === ta) return;
+    const hit = [...view.querySelectorAll('.r-link')].find(l => [...l.getClientRects()].some(r => e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom));
+    if (hit) { e.preventDefault(); openLink({ link: hit.dataset.link, url: !!hit.dataset.url }); }
+  });
+  return h('div', { class: 'cwrap' }, ta, view);   // the field first: a query for the field by its class finds it, not the view
+}
+
 /** A single-paragraph text field that grows: Enter does not insert a line break. */
 function lineField(cls, value, placeholder, onInput) {
   const ta = h('textarea', { class: cls, rows: 1, placeholder, value });
@@ -2219,9 +2234,10 @@ function renderProse(main) {
         b.addEventListener('input', () => change(() => { const q = paragraph(id); if (q) C.setGroupName(q, b.value); }));
         let a;
         if (p.cid || p.claim) {
-          a = lineField('gm claim', p.claim, 'add claim', v => change(() => { const q = paragraph(id); if (q) q.claim = v; }));
-          a.dataset.key = 'claim:' + id;
-          styleable(a);
+          const f = lineField('gm claim', p.claim, 'add claim', v => change(() => { const q = paragraph(id); if (q) q.claim = v; }));
+          f.dataset.key = 'claim:' + id;
+          styleable(f);
+          a = richClaim(f, 'gm claim');
         } else {
           a = h('input', { class: 'gm', value: C.groupName(p), placeholder: 'group' });
           a.addEventListener('input', () => { change(() => { const q = paragraph(id); if (q) C.setGroupName(q, a.value); }); b.value = a.value; });
@@ -2242,7 +2258,7 @@ function renderProse(main) {
         const t = shadow.querySelector(`.prow[data-id="${id}"] .pedit`);
         if (t) { e.preventDefault(); t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
       });
-      const note = h('div', { class: 'mnote' }, claimField);
+      const note = h('div', { class: 'mnote' }, richClaim(claimField));
       const dots = p.needs.filter(cid => deps.has(cid)).map(cid => {
         const [did, si] = deps.get(cid);
         const d = h('b', { title: 'Depends on ' + cid, style: { '--hue': hue(si) } });
