@@ -61,3 +61,7 @@ The document model and the LaTeX export and import (`src/core.js`, `latex.js`, `
 `npm test` runs the fast tests. `npm run test:e2e` starts a real Obsidian, with Overleaf played by a local Git repository. `node build.js --install <vault>` builds and installs. `npm version x.y.z` followed by pushing the tag makes a draft release.
 
 MIT © dieGurken
+
+## Installing pdflatex
+
+Debian/Ubuntu: `sudo apt-get install -y texlive-latex-base` (add `texlive-latex-extra` if packages are missing). Check with `pdflatex --version`.
