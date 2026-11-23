@@ -64,4 +64,4 @@ MIT © dieGurken
 
 ## Installing pdflatex
 
-Debian/Ubuntu: `sudo apt-get install -y texlive-latex-base` (add `texlive-latex-extra` if packages are missing). Check with `pdflatex --version`.
+Debian/Ubuntu: `sudo apt-get install -y texlive-latex-base texlive-fonts-recommended texlive-latex-extra`. Conference templates need the last two: `texlive-fonts-recommended` has the Times metrics (ICML, NeurIPS), `texlive-latex-extra` has `forloop`, `cleveref` and similar packages. Check with `pdflatex --version`.
