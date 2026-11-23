@@ -63,7 +63,11 @@
   }
   const isBlock = p => ['figure', 'table', 'equation'].includes(kind(p));
   const isMarker = p => { const k = kind(p); return k === 'group' || k === 'groupEnd'; };
-  const isCard = p => kind(p) === 'prose';
+  /** A paragraph of the text of a heading: prose that belongs to no claim. The text of a section or subsection is one field in
+   *  Prose; in the file it is these paragraphs, next to each other right under the heading. */
+  const isText = p => kind(p) === 'prose' && !p.claim && !p.cid && trimmed(p.text) !== '';
+  /** A claim of the Map (a card): prose that is not text of a heading. */
+  const isCard = p => kind(p) === 'prose' && !isText(p);
   /** 2 to 5 for a subsection heading or the end marker that closes that level, null for anything else. */
   function level(p) {
     const t = trimmed(p.text);
@@ -92,6 +96,62 @@
   const equation = p => trimmed(p.text.replaceAll('$$', ''));
 
   // ---- groups ----
+
+  // ---- the text of a heading ----
+
+  /** Where the text of a heading goes in `s.paragraphs`: right under its heading (`gid`; '' for the section itself). */
+  function textSlot(s, gid) {
+    if (!gid) return 0;
+    const k = s.paragraphs.findIndex(p => p.id === gid);
+    return k < 0 ? s.paragraphs.length : k + 1;
+  }
+  /** The indexes of the text paragraphs that belong to heading `gid` ('' = the section, before its first subsection). */
+  function textIndexes(s, gid) {
+    const of = groupOf(s), r = [];
+    s.paragraphs.forEach((p, k) => { if (isText(p) && (of[k] || '') === (gid || '')) r.push(k); });
+    return r;
+  }
+  const SPLIT = /\n[ \t]*\n\s*/;
+  /** The paragraphs of a field's text: split at blank lines, trimmed, empty ones dropped. */
+  const chunks = v => String(v || '').split(SPLIT).map(c => c.replace(/^\s+|\s+$/g, '')).filter(Boolean);
+  /** The text of heading `gid` as it is in the field: its paragraphs, a blank line between them. */
+  const getText = (s, gid) => textIndexes(s, gid).map(k => s.paragraphs[k].text).join('\n\n');
+  /** Write `value` as the text of heading `gid`: the paragraphs that are there are reused in order (so their places in the file
+   *  and their keys in LaTeX stay), more are added after the last, surplus ones removed. Returns whether something changed. */
+  function setText(s, gid, value) {
+    const want = chunks(value), at = textIndexes(s, gid), ps = at.map(k => s.paragraphs[k]);
+    if (want.length === ps.length && want.every((c, i) => c === ps[i].text)) return false;
+    const n = Math.min(want.length, ps.length);
+    for (let i = 0; i < n; i++) ps[i].text = want[i];
+    for (const p of ps.slice(n)) s.paragraphs.splice(s.paragraphs.indexOf(p), 1);
+    if (want.length > n) {
+      const after = n ? s.paragraphs.indexOf(ps[n - 1]) + 1 : textSlot(s, gid);
+      s.paragraphs.splice(after, 0, ...want.slice(n).map(t => newParagraph({ text: t })));
+    }
+    return true;
+  }
+  /** Bring the document to the form of one text per heading: what claims carry as paragraphs, and text that lies between the
+   *  claims or after a subsection, becomes text paragraphs right under their heading (the claims stay, without prose). Nothing
+   *  changes in a document that is in that form. Returns whether something changed. */
+  function normalizeText(d) {
+    let changed = false;
+    for (const s of d.sections) {
+      const of = groupOf(s), by = new Map(), moved = new Set();
+      s.paragraphs.forEach((p, k) => {
+        if (kind(p) !== 'prose' || trimmed(p.text) === '') return;
+        const g = of[k] || '';
+        if (!by.has(g)) by.set(g, []);
+        if (p.claim || p.cid) { by.get(g).push(newParagraph({ text: p.text })); p.text = ''; changed = true; }
+        else { by.get(g).push(p); moved.add(p); }
+      });
+      if (!by.size) continue;
+      const out = [], put = g => { for (const t of by.get(g) || []) out.push(t); };
+      put('');
+      for (const p of s.paragraphs) { if (moved.has(p)) continue; out.push(p); if (kind(p) === 'group') put(p.id); }
+      if (out.length !== s.paragraphs.length || out.some((p, i) => p !== s.paragraphs[i])) { s.paragraphs = out; changed = true; }
+    }
+    return changed;
+  }
 
   /** The headings that are open after paragraphs[0 .. i-1], outermost first: [{ id, level }]. A heading closes every open
    *  heading of its own level or deeper, an end marker of level L closes those of level L or deeper. */
@@ -501,6 +561,7 @@
   function parseSection(ls) {
     const title = trimmed(ls[0].slice(1));
     let j = 1, syn = '', island = null, sid = '';
+    const dropped = [];   // indexes of island lines after the first
     while (j < ls.length) {
       if (trimmed(ls[j]) === '') { j += 1; continue; }
       const s = comment(ls[j], 'synopsis');
@@ -566,7 +627,6 @@
     if (kind(p) === 'group') {
       // the heading, then the subsection comment when it came from a claim
       r.push(p.text);
-    const dropped = [];   // indexes of island lines after the first
       if (p.origClaimLine !== null && eq(metaOf(p), p.orig)) r.push(p.origClaimLine);
       else if (p.origClaimLine !== null || p.claim || p.cid) r.push(claimLine(metaOf(p), 'subsection'));
       return r.concat(p.trailing);
@@ -938,7 +998,7 @@
 
   return {
     uid, trimmed, oneLine, eq, newParagraph, newSection, newIdea, newDoc,
-    kind, isBlock, isMarker, isCard, groupName, setGroupName, figure, tableRows, equation,
+    kind, isBlock, isMarker, isCard, isText, textSlot, textIndexes, getText, setText, normalizeText, chunks, groupName, setGroupName, figure, tableRows, equation,
     groupOf, groupAt, endOfGroup, normalizeGroups, numbering, plan, inactiveIds, endGroup, endMarker, level, withLevel, openAt, pathOf, subtreeEnd, shiftLevels, depthBelow, MAX_LEVEL,
     parse, serialize, repair, check, assignIDs, isDocument, isFormatLine,
     lcsPairs, merge3Lines, mergeDocs, closestBase, joinSegments, renameIds, idsIn, dropDangling, fixDuplicateIds, fenceAfter,

@@ -182,6 +182,7 @@ function adopt(text) {
   const d = C.parse(text);
   C.repair(d);
   C.dropDangling(d);
+  C.normalizeText(d);   // one text per heading (see core.js)
   for (const s of d.sections) {
     if (s.sid && secIds.has(s.sid)) s.id = secIds.get(s.sid);
     for (const p of s.paragraphs) if (p.cid && paraIds.has(p.cid)) p.id = paraIds.get(p.cid);
@@ -444,7 +445,7 @@ function layout(s) {
     const k = C.kind(p);
     if (k === 'group') { closeTo(C.level(p)); stack.push({ id: p.id, level: C.level(p), top: y, empty: true }); y += L.groupHeader; }
     else if (k === 'groupEnd') closeTo(C.level(p));
-    else if (k === 'prose') {
+    else if (k === 'prose' && !C.isText(p)) {
       const ins = stack.length * L.groupInset;
       r.cards.set(p.id, rect(o.x + L.pad + ins, y, L.cardW - 2 * ins, height(p.id)));
       y += height(p.id) + L.gap;
@@ -781,8 +782,7 @@ function groupSelection() {
   });
 }
 
-/** Expand a claim into a subsection: the claim becomes the heading (its text the title; its id and links stay with it),
- *  and its prose, if any, the first paragraph inside. At section level this makes a `##` subsection. */
+/** Expand a claim into a subsection: the claim becomes the heading (its text the title; its id and links stay with it), with an empty card inside. At section level this makes a `##` subsection. */
 function expandClaim(id) {
   const loc = locate(id);
   if (!loc) return;
@@ -794,11 +794,10 @@ function expandClaim(id) {
     C.assignIDs(S.doc);
     const s = S.doc.sections[loc[0]], k = s.paragraphs.findIndex(q => q.id === id), p = s.paragraphs[k];
     const head = C.newParagraph({ text: '#'.repeat(lvl) + ' ' + C.oneLine(C.trimmed(p.claim) || 'Untitled'), cid: p.cid, needs: p.needs, claim: '' });
-    const inner = C.trimmed(p.text) !== '' ? C.newParagraph({ text: p.text }) : C.newParagraph({ claim: 'New claim' });
-    s.paragraphs.splice(k, 1, head, inner, C.newParagraph({ text: C.endMarker(lvl) }));
+    // inside: an empty card, for the claims of the subsection (its text is the field of its heading in Prose)
+    s.paragraphs.splice(k, 1, head, C.newParagraph(), C.newParagraph({ text: C.endMarker(lvl) }));
     C.normalizeGroups(s);
     S.selection = new Set();
-    if (C.trimmed(p.text) === '') S.editing = inner.id;
     S.lastSection = s.id;
   });
 }
@@ -831,8 +830,8 @@ function deleteSubsection(gid) {
   if (!loc) return;
   const s = S.doc.sections[loc[0]], i = loc[1], e = C.subtreeEnd(s, gid);
   const gone = s.paragraphs.slice(i, e);
-  const prose = gone.filter(q => C.isCard(q) && C.trimmed(q.text) !== '').length;
-  if (prose && !win().confirm(`Delete this subsection with ${gone.filter(C.isCard).length} claims, ${prose} of them with prose?`)) return;
+  const prose = gone.filter(C.isText).length;
+  if (prose && !win().confirm(`Delete this subsection with ${gone.filter(C.isCard).length} claims and ${prose} paragraph${prose > 1 ? 's' : ''} of text?`)) return;
   act(() => {
     s.paragraphs.splice(i, e - i);
     C.normalizeGroups(s);
@@ -878,12 +877,13 @@ function deleteSelection() {
     for (const p of [...s.paragraphs]) {
       if (!S.selection.has(p.id) || C.kind(p) !== 'group') continue;
       for (const q of s.paragraphs.slice(s.paragraphs.indexOf(p), C.subtreeEnd(s, p.id) ?? s.paragraphs.length)) {
-        if (!sel.has(q.id) && C.isCard(q)) { claims++; if (C.trimmed(q.text) !== '') prose++; }
+        if (!sel.has(q.id) && C.isCard(q)) claims++;
+        if (!sel.has(q.id) && C.isText(q)) prose++;
         sel.add(q.id);
       }
     }
   }
-  if (prose && !win().confirm(`Delete this subsection with ${claims} claims, ${prose} of them with prose?`)) return;
+  if (prose && !win().confirm(`Delete this subsection with ${claims} claims and ${prose} paragraph${prose > 1 ? 's' : ''} of text?`)) return;
   act(() => {
     const gone = new Set();
     for (const s of S.doc.sections) if (sel.has(s.id)) { s.paragraphs.forEach(p => gone.add(p.cid)); gone.add(s.sid); }
@@ -1023,17 +1023,6 @@ function noodleControls(a, b, g) {
   return [p0, { x, y: p0.y }, { x, y: p3.y }, p3];
 }
 
-/** Enter on the empty last line of a paragraph: start a new paragraph after it. */
-function splitParagraph(id) {
-  const loc = locate(id);
-  if (!loc) return;
-  act(() => {
-    const p = C.newParagraph();
-    S.doc.sections[loc[0]].paragraphs.splice(loc[1] + 1, 0, p);
-    S.focusParagraph = p.id;
-  });
-}
-
 // ---- sections ----
 
 /** A new, empty subsection at a slot of an island (`y`: the drop height, else the end of the island). One level below the
@@ -1078,6 +1067,34 @@ function addProseClaim(sid, afterId) {
     else insert(p, sid, { kind: 'before', id: s.paragraphs[k + 1].id, group: C.groupOf(s)[k] });
     S.focusClaim = p.id;
     S.lastSection = sid;
+  });
+}
+
+/** Prose: move a claim (with its paragraph) one place up or down. It passes subsection headings and ends (so it moves in and out
+ *  of a subsection), and at the edge of a section goes on into the neighbouring one. What is switched off is skipped. */
+function moveProseClaim(id, dir) {
+  const loc = locate(id);
+  if (!loc) return;
+  const pl = C.plan(S.doc), secs = S.doc.sections;
+  act(() => {
+    const [si, pi] = loc, from = secs[si].paragraphs;
+    const [p] = from.splice(pi, 1);
+    let s = si, k = pi + dir;
+    for (;;) {
+      const ps = secs[s].paragraphs;
+      if (k >= 0 && k <= ps.length) {
+        const nb = ps[dir < 0 ? k : k - 1];
+        if (nb && pl.hidden.has(nb.id) && C.kind(nb) !== 'groupEnd') { k += dir; continue; }
+        break;
+      }
+      s += dir;
+      while (secs[s] && pl.secOff.has(secs[s].id)) s += dir;
+      if (!secs[s]) { s -= dir; k = dir < 0 ? 0 : secs[s].paragraphs.length; break; }
+      k = dir < 0 ? secs[s].paragraphs.length : 0;
+      break;
+    }
+    secs[s].paragraphs.splice(Math.max(0, Math.min(k, secs[s].paragraphs.length)), 0, p);
+    S.lastSection = secs[s].id;
   });
 }
 
@@ -1442,6 +1459,7 @@ function buildMap(main) {
 
   main.replaceChildren(mapEl);
   if (resizeObs) resizeObs.disconnect();
+  observed = new WeakSet();
   resizeObs = new (win().ResizeObserver)(() => { if (mapEl && mapEl.isConnected && !rendering && !destroyed) layoutMap(); });
   resizeObs.observe(mapEl);
 }
@@ -1459,7 +1477,6 @@ function switchId(id, create) {
   return p ? p.cid : '';
 }
 const isOn = id => { const k = switchId(id); return !k || !C.inactiveIds(S.doc).has(k); };
-  observed = new WeakSet();
 
 /** Put an island or a free-floating block into the paper, or leave it out (Prose and LaTeX do not show it). */
 function setOn(id, on) {
@@ -1491,7 +1508,7 @@ function renderMap(main) {
   worldA.replaceChildren(...S.doc.sections.map((s, i) => islandEl(s, i)));
   const cards = [];
   S.doc.sections.forEach((s, i) => {
-    for (const p of s.paragraphs) if (!C.isMarker(p)) cards.push(cardEl(p.id, p.claim, C.isBlock(p) ? BLOCK_HUE : hue(i), p));
+    for (const p of s.paragraphs) if (!C.isMarker(p) && !C.isText(p)) cards.push(cardEl(p.id, p.claim, C.isBlock(p) ? BLOCK_HUE : hue(i), p));
   });
   for (const it of S.doc.unplaced) cards.push(cardEl(it.id, it.text, IDEA_HUE, null));
   worldB.replaceChildren(...cards);
@@ -1620,7 +1637,6 @@ function cardEl(id, text, hueStr, para) {
   } else {
     row.append(h('div', { class: 'text' + (text ? '' : ' empty') }, ...(text ? richNodes(text) : ['(no claim)'])));
   }
-  if (isPara && !isBlock && C.trimmed(para.text) === '') row.append(h('div', { class: 'noprose', title: 'No prose yet' }));
   el.append(row);
 
   if (isBlock) {
@@ -2183,13 +2199,18 @@ function replaceRange(ta, start, end, text) {
 }
 
 /** Paragraph editor with live list formatting. Grows with its content. */
-function paragraphEditor(p) {
-  const id = p.id;
-  const ta = h('textarea', { class: 'pedit', rows: 1, placeholder: 'Write this paragraph…', value: bulletsDisplay(p.text), data: { key: 'para:' + id } });
-  if (S.focusParagraph === id) ta.dataset.autofocus = 'end';
-  // Until it is focused, the paragraph is shown with its styles (the text field, which has the markers, lies invisibly on top).
+/** The text of a section or subsection: one field for all of it, whatever the number of claims. A blank line makes a new
+ *  paragraph (in the file: a paragraph of its own, without a claim, right under the heading). `ids`: the ids of what is
+ *  shown beside it, to focus and light up the row. */
+const drafts = new Map();   // what is typed in a field, with the blank lines at its end that the document cannot keep
+function textEditor(sid, gid, ids) {
+  const key = 'text:' + (gid || sid), s0 = section(sid), stored = s0 ? C.getText(s0, gid) : '';
+  const raw = drafts.get(key), same = raw !== undefined && C.chunks(bulletsMarkdown(raw)).join('\n\n') === stored;
+  const ta = h('textarea', { class: 'pedit', rows: 1, placeholder: 'Write the text of this ' + (gid ? 'subsection' : 'section') + '…', value: same ? raw : bulletsDisplay(stored), data: { key } });
+  if (ids.includes(S.focusParagraph)) ta.dataset.autofocus = 'end';
+  // Until it is focused, the text is shown with its styles (the text field, which has the markers, lies invisibly on top).
   const view = h('div', { class: 'pview' });
-  // A click on a link of the shown paragraph opens it (the invisible text field lies on top, so it is asked by position).
+  // A click on a link of the shown text opens it (the invisible text field lies on top, so it is asked by position).
   ta.addEventListener('mousedown', e => {
     if (e.button !== 0 || shadow.activeElement === ta) return;
     const hit = [...view.querySelectorAll('.r-link')].find(l => [...l.getClientRects()].some(r => e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom));
@@ -2200,18 +2221,20 @@ function paragraphEditor(p) {
     const l = linkAtOffset(ta.value, ta.selectionStart);
     if (l) openLink(l);
   });
-  const paint = () => view.replaceChildren(...(ta.value ? richNodes(ta.value) : [h('span', { class: 'ph' }, 'Write this paragraph…')]));
+  const ph = ta.placeholder;
+  const paint = () => view.replaceChildren(...(ta.value ? richNodes(ta.value) : [h('span', { class: 'ph' }, ph)]));
   paint();
   styleable(ta);
   const sync = () => {
     // "- " or "* " typed at a line start becomes a bullet.
     const shown = bulletsDisplay(bulletsMarkdown(ta.value));
     if (shown !== ta.value && shown.length === ta.value.length) {
-      const s = ta.selectionStart, e = ta.selectionEnd;
+      const a = ta.selectionStart, e = ta.selectionEnd;
       ta.value = shown;
-      ta.setSelectionRange(s, e);
+      ta.setSelectionRange(a, e);
     }
-    change(() => { const q = paragraph(id); if (q) q.text = bulletsMarkdown(ta.value); });
+    drafts.set(key, ta.value);
+    change(() => { const q = section(sid); if (q) C.setText(q, gid, bulletsMarkdown(ta.value)); });
     paint();
     autosize(ta);
   };
@@ -2223,19 +2246,11 @@ function paragraphEditor(p) {
     const ls = v.lastIndexOf('\n', pos - 1) + 1, nl = v.indexOf('\n', pos), le = nl < 0 ? v.length : nl;
     const line = v.slice(ls, le), m = listLine(line);
     if (e.key === 'Enter') {
-      // Enter continues a list, ends it on an empty item, never makes a blank line inside the
-      // paragraph, and splits off a new paragraph when pressed on an empty last line.
-      if (m) {
-        e.preventDefault();
-        if (C.trimmed(m.content) === '') replaceRange(ta, ls, le, ''); else replaceRange(ta, pos, ta.selectionEnd, '\n' + m.indent + m.nextMarker);
-        sync();
-      } else if (C.trimmed(line) === '') {
-        e.preventDefault();
-        if (le === v.length) {
-          if (ls > 0) { replaceRange(ta, ls - 1, le, ''); sync(); }
-          splitParagraph(id);
-        }
-      }
+      // Enter continues a list and ends it on an empty item; anywhere else it is a line break (two of them: a new paragraph).
+      if (!m) return;
+      e.preventDefault();
+      if (C.trimmed(m.content) === '') replaceRange(ta, ls, le, ''); else replaceRange(ta, pos, ta.selectionEnd, '\n' + m.indent + m.nextMarker);
+      sync();
     } else if (!e.shiftKey) {
       e.preventDefault();
       if (m) replaceRange(ta, ls, ls, m.step); else replaceRange(ta, pos, ta.selectionEnd, '\t');
@@ -2324,7 +2339,7 @@ function lineField(cls, value, placeholder, onInput) {
 function setHighlight(id) {
   S.highlight = id;
   shadow.querySelectorAll('.prow.highlight').forEach(r => r.classList.remove('highlight'));
-  if (id) { const r = shadow.querySelector(`.prow[data-id="${id}"]`); if (r) r.classList.add('highlight'); }
+  if (id) { const r = shadow.querySelector(`.prow[data-id="${id}"], .prow[data-ids~="${id}"]`); if (r) r.classList.add('highlight'); }
 }
 
 function renderProse(main) {
@@ -2356,30 +2371,54 @@ function renderProse(main) {
     // Enter ends the claim and goes on to the paragraph
     claimField.addEventListener('keydown', e => {
       if (e.key !== 'Enter' || e.isComposing) return;
-      const t = shadow.querySelector(`.prow[data-id="${id}"] .pedit`);
+      const t = shadow.querySelector(`.prow[data-ids~="${id}"] .pedit`);
       if (t) { e.preventDefault(); t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
     });
-    const note = h('div', { class: 'mnote' }, o.from != null && h('div', { class: 'pulled-from', title: 'Shown here because the claim above needs it. Its block is switched off, so it is not in the paper anywhere else.' }, '↳ from ' + (o.from || 'a block')), richClaim(claimField));
+    const note = h('div', { class: 'mnote', style: { '--hue': o.hu } }, o.from != null && h('div', { class: 'pulled-from', title: 'Shown here because the claim above needs it. Its block is switched off, so it is not in the paper anywhere else.' }, '↳ from ' + (o.from || 'a block')), richClaim(claimField));
     const dots = p.needs.filter(cid => deps.has(cid)).map(cid => {
       const [did, si] = deps.get(cid);
       const d = h('b', { title: 'Depends on ' + cid, style: { '--hue': hue(si) } });
       d.addEventListener('mouseenter', () => setHighlight(did));
       d.addEventListener('mouseleave', () => { if (S.highlight === did) setHighlight(null); });
       d.addEventListener('click', () => {
-        const r = shadow.querySelector(`.prow[data-id="${did}"]`);
+        const r = shadow.querySelector(`.mnote[data-id="${did}"], .prow[data-id="${did}"]`);
         if (r) r.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
       return d;
     });
     if (dots.length) note.append(h('div', { class: 'dots' }, dots));
-    const row = h('div', { class: 'prow' + (o.rail ? ' rail' : '') + (o.from != null ? ' pulled' : ''), data: { id, sec: sid }, style: { '--hue': o.hu, '--depth': o.depth } },
-      h('div', { class: 'hl' }, ), note, proseBlock(p, kind, sid));
     if (o.from == null) {
       note.append(h('div', { class: 'padd-tools' },
+        h('button', { class: 'padd-after', title: 'Move this claim up', onclick: () => moveProseClaim(id, -1) }, '↑'),
+        h('button', { class: 'padd-after', title: 'Move this claim down', onclick: () => moveProseClaim(id, 1) }, '↓'),
         C.isCard(p) && h('button', { class: 'padd-after', title: 'Expand this claim into a subsection', onclick: () => expandClaim(id) }, '↳'),
         h('button', { class: 'padd-after', title: 'New claim below', onclick: () => addProseClaim(sid, id) }, '+')));
     }
+    note.dataset.id = id;
+    if (kind === 'prose') return note;   // the text is not the claim's: it is the heading's (see regionRow)
+    const row = h('div', { class: 'prow' + (o.rail ? ' rail' : '') + (o.from != null ? ' pulled' : ''), data: { id, sec: sid }, style: { '--hue': o.hu, '--depth': o.depth } },
+      h('div', { class: 'hl' }, ), note, proseBlock(p, kind, sid));
     return row;
+  };
+
+  // The claims of a section or subsection (a list in the margin) beside its text (one field), and below them whatever is
+  // there as a block of its own. A claim's own prose does not exist any more: all text belongs to a heading.
+  const regionRow = (s, gid, hu, rail, depth) => {
+    const sid = s.id, of = C.groupOf(s), notes = [], ids = [];
+    s.paragraphs.forEach((p, k) => {
+      if ((of[k] || '') !== gid) return;
+      if (C.isText(p)) { ids.push(p.id); return; }
+      if (!C.isCard(p) || pl.hidden.has(p.id)) return;
+      ids.push(p.id);
+      notes.push(claimRow(p, { sid, hu, rail, depth }));
+      // the claims of a block that is off that this claim needs, below it
+      for (const q of pl.pulled.get(p.id) || []) {
+        const qs = S.doc.sections.find(x => x.paragraphs.includes(q));
+        notes.push(claimRow(q, { sid: qs.id, hu: hue(S.doc.sections.indexOf(qs)), rail: false, depth: 0, from: qs.title }));
+      }
+    });
+    return h('div', { class: 'prow rgrow' + (rail ? ' rail' : ''), data: { ids: ids.join(' '), sec: sid }, style: { '--hue': hu, '--depth': depth } },
+      h('div', { class: 'hl' }), h('div', { class: 'mcol' }, ...notes), h('div', { class: 'pblock' }, textEditor(sid, gid, ids)));
   };
 
   const inner = h('div', { class: 'inner' });
@@ -2394,6 +2433,7 @@ function renderProse(main) {
       if (S.focusSection === sid) title.dataset.autofocus = 'select';
       title.addEventListener('input', () => change(() => { const q = section(sid); if (q) q.title = title.value; }));
       inner.append(h('div', { class: 'sechead', data: { id: sid, sec: sid }, style: { '--hue': hu } }, h('i'), h('span', { class: 'num' }, numbers.sections.get(sid)), title));
+      inner.append(regionRow(s, '', hu, false, 0));
     }
     const of = C.groupOf(s), path = C.pathOf(s);
     s.paragraphs.forEach((p, k) => {
@@ -2421,14 +2461,11 @@ function renderProse(main) {
         }
         const del = h('button', { class: 'gdel', title: 'Remove this subsection (what is in it stays)', onclick: () => ungroup(id) }, '×');
         inner.append(h('div', { class: 'ghead rail', data: { id, sec: sid }, style: { '--hue': hu, '--depth': depth, '--level': C.level(p) } }, a, h('i'), num, b, del));
+        inner.append(regionRow(s, id, hu, true, depth));
         return;
       }
+      if (kind === 'prose') return;   // claims and text are in the row of their heading
       inner.append(claimRow(p, { sid, hu, rail: !!of[k], depth }));
-      // the claims of a block that is off that this claim needs, below it
-      for (const q of pl.pulled.get(p.id) || []) {
-        const qs = S.doc.sections.find(x => x.paragraphs.includes(q));
-        inner.append(claimRow(q, { sid: qs.id, hu: hue(S.doc.sections.indexOf(qs)), rail: false, depth: 0, from: qs.title }));
-      }
     });
     if (!secOff) inner.append(h('div', { class: 'padd', data: { sec: sid } }, h('button', { title: 'Add a claim with its paragraph to this section', onclick: () => addProseClaim(sid, null) }, '+ Add claim')));
   });
@@ -2442,7 +2479,7 @@ function renderProse(main) {
   }
   // from the LaTeX view: the paragraph a line came from, lit up for a moment
   if (typeof S.tex.scrollTo === 'string') {
-    const id = S.tex.scrollTo, el = sc.querySelector(`.prow[data-id="${id}"]`);
+    const id = S.tex.scrollTo, el = sc.querySelector(`.prow[data-id="${id}"], .prow[data-ids~="${id}"]`);
     S.tex.scrollTo = null;
     if (el) {
       el.scrollIntoView({ block: 'center' });
@@ -2455,7 +2492,6 @@ function renderProse(main) {
 
 function proseBlock(p, kind, sid) {
   const id = p.id, el = h('div', { class: 'pblock' });
-  if (kind === 'prose') { el.append(paragraphEditor(p)); return el; }
   if (kind === 'table') { el.append(tableGrid(id, C.tableRows(p), 13, true)); return el; }
   let shown;
   if (kind === 'figure') {
@@ -2632,7 +2668,7 @@ const exportOpts = () => {
 
 function takeOver(theirs, base) {
   let res = { changed: 0, report: [] };
-  act(() => { res = FromLatex.importTex(S.doc, { ...exportOpts(), theirs, base }); });
+  act(() => { res = FromLatex.importTex(S.doc, { ...exportOpts(), theirs, base }); C.normalizeText(S.doc); });
   S.tex.report = res.report.length ? res.report : null;
   return res;
 }
@@ -2867,7 +2903,7 @@ function showInProse(key) {
   if (!f) return;
   S.lastSection = f.section.id;
   S.tex.scrollTo = f.p ? f.p.id : null;
-  if (f.p && C.isCard(f.p)) S.focusParagraph = f.p.id;
+  if (f.p && C.kind(f.p) === 'prose') S.focusParagraph = f.p.id;
   setLevelInternal('prose');
 }
 
@@ -3170,6 +3206,8 @@ return {
     return false;
   },
   writeProject: writeProjectFiles,
+  /** The text of the heading that the claim `cid` is under (for tests). */
+  bodyOf: cid => { for (const s of S.doc.sections) { const k = s.paragraphs.findIndex(p => p.cid === cid); if (k >= 0) return C.getText(s, C.groupOf(s)[k] || ''); } return null; },
   group: groupSelection, ungroup: ungroupSelection, undo, redo, check: () => C.check(currentText()),
   hasConflict: () => !!S.conflict, resolveConflicts, chooseAll, saveNow: save,
   /** The open text when a conflict is waiting (to keep it somewhere before the view closes), else null. */
