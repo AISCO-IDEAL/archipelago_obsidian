@@ -1425,6 +1425,7 @@ function buildMap(main) {
   });
 
   mapEl.addEventListener('pointermove', e => {
+    S.pointerWorld = toWorld(local(e));
     if (S.linkingFrom) { S.linkPointer = toWorld(local(e)); layoutMap(); }
   });
 
@@ -2217,6 +2218,50 @@ function richClaim(ta, cls) {
   return h('div', { class: 'cwrap' }, ta, view);   // the field first: a query for the field by its class finds it, not the view
 }
 
+const IMAGE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/bmp': 'bmp', 'image/tiff': 'tiff' };
+
+/** The image files on the clipboard (a screenshot, an image copied from a browser or an editor), named the way Obsidian names a
+ *  pasted image when they have no name of their own. */
+function clipboardImages(e) {
+  const out = [], stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+  for (const f of [...(e.clipboardData ? e.clipboardData.files : [])]) {
+    const extn = IMAGE_TYPES[f.type];
+    if (!extn) continue;
+    const named = f.name && f.name !== 'image.png' && /\.[A-Za-z0-9]+$/.test(f.name);
+    out.push(named ? f : new (win().File)([f], `Pasted image ${stamp}${out.length ? '-' + out.length : ''}.${extn}`, { type: f.type }));
+  }
+  return out;
+}
+
+/** Pasted images become figures: on the Map where the pointer last was (else the middle of the view), in Prose below the paragraph
+ *  that has the focus (else at the end of the section that was touched last). */
+async function pasteImages(files) {
+  let rs;
+  try { rs = await host.importImages(files); } catch { setStatus('Could not add the image'); return; }
+  if (!rs.length || destroyed) return;
+  if (S.level === 'map') {
+    const c = S.pointerWorld || toWorld({ x: S.viewport.w / 2, y: S.viewport.h / 2 });
+    rs.forEach((r, k) => addFigureRef(r, { x: c.x + k * 30, y: c.y + k * 30 }));
+    return;
+  }
+  const row = shadow.activeElement && shadow.activeElement.closest ? shadow.activeElement.closest('.prow') : null;
+  const s = (row && section(row.dataset.sec)) || section(S.lastSection) || S.doc.sections[S.doc.sections.length - 1];
+  if (!s) { setStatus('Add a section first'); return; }
+  act(() => {
+    let after = row && row.dataset.sec === s.id ? row.dataset.id : null;
+    const r0 = islandRect(s);
+    for (const r of rs) {
+      const p = C.newParagraph({ claim: `What ${r.name} shows`, text: `![${r.name}](${r.rel})`, pos: { x: r0.x + r0.w + 60, y: r0.y }, autoPlace: true });
+      const k = after ? s.paragraphs.findIndex(q => q.id === after) : -1;
+      if (k < 0 || k + 1 >= s.paragraphs.length) insert(p, s.id, { kind: 'end' });
+      else insert(p, s.id, { kind: 'before', id: s.paragraphs[k + 1].id, group: C.groupOf(s)[k] });
+      after = p.id;
+    }
+    C.assignIDs(S.doc);
+    S.lastSection = s.id;
+  });
+}
+
 /** A single-paragraph text field that grows: Enter does not insert a line break. */
 function lineField(cls, value, placeholder, onInput) {
   const ta = h('textarea', { class: cls, rows: 1, placeholder, value });
@@ -2905,6 +2950,15 @@ rootEl.addEventListener('keydown', e => {
 rootEl.addEventListener('contextmenu', e => { if (!isTextTarget(shadow.activeElement) || !isTextTarget(e.target)) e.preventDefault(); });
 // Pinching and Ctrl+scroll must not zoom Obsidian itself.
 rootEl.addEventListener('wheel', e => { if (e.ctrlKey || e.metaKey) e.preventDefault(); }, { passive: false });
+// Ctrl+V with an image on the clipboard adds a figure (Map and Prose). A clipboard with text, in a text field, pastes the text.
+rootEl.addEventListener('paste', e => {
+  if (S.conflict || (S.level !== 'map' && S.level !== 'prose')) return;
+  const files = clipboardImages(e);
+  if (!files.length) return;
+  if (isTextTarget(e.target) && e.clipboardData.getData('text/plain')) return;
+  e.preventDefault(); e.stopPropagation();
+  pasteImages(files);
+});
 // A click on the map gives this view the keyboard focus (the map itself has no focusable element).
 rootEl.addEventListener('pointerdown', e => {
   if (openMenus.length && !e.target.closest('.menu')) closeMenu();

@@ -286,6 +286,26 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     await dropPng('dropped one.png');
     await sleep(800);
     ok(await ev(`app.vault.getFiles().filter(f => f.path.startsWith("${FIG}/") && f.extension === "png").length`) === 1, 'the same image dropped again is stored once');
+    // Ctrl+V: an image on the clipboard becomes a figure
+    const pngB64 = JSON.stringify(png.toString('base64'));
+    const pasteOn = (sel, withText) => ev(`(() => { const bytes = Uint8Array.from(atob(${pngB64}), c => c.charCodeAt(0)); const dt = new DataTransfer(); dt.items.add(new File([bytes], 'image.png', { type: 'image/png' })); ${withText ? "dt.setData('text/plain', 'some text');" : ''} const t = ${sel}; const e = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true, composed: true }); t.dispatchEvent(e); return e.defaultPrevented; })()`);
+    const pngCount = () => ev(`app.vault.getFiles().filter(f => f.path.startsWith("${FIG}/example/figures/") && f.extension === "png").length`);
+    const nPng = await pngCount();
+    ok(await pasteOn("T.q('#map')") === true, 'Ctrl+V with an image on the clipboard is taken by the map');
+    ok(await waitFor(`app.vault.getFiles().some(f => /^Pasted image \\d+\\.png$/.test(f.name) && f.path.startsWith("${FIG}/example/figures/"))`), 'the image goes into the figures/ of the document, named like Obsidian names a pasted image');
+    ok(await waitFor('T.qa(".card").some(c => c.textContent.includes("Pasted image"))') && await pngCount() === nPng + 1, 'and becomes a figure card');
+    await ev('T.ui().undo()');
+    await ev('T.ui().setLevel("prose")'); await waitFor('!!T.q("#prose")');
+    await ev(`(() => { const t = T.qa('.pedit')[0]; t.focus(); })()`);
+    const before = await U('S.doc.sections.flatMap(s => s.paragraphs).length');
+    ok(await pasteOn("T.ui().shadow.activeElement") === true, 'Ctrl+V in a paragraph of Prose takes the image, too');
+    ok(await waitFor(`T.ui().S.doc.sections.flatMap(s => s.paragraphs).some(p => p.text.startsWith("![Pasted image")) && T.ui().S.doc.sections.flatMap(s => s.paragraphs).length === ${before + 1}`), 'it becomes a figure paragraph below it');
+    ok(await waitFor('T.qa(".pfig img").some(i => i.naturalWidth > 0)', 5000), 'which Prose shows');
+    await ev('T.ui().undo()');
+    await ev(`(() => { const t = T.qa('.pedit')[0]; t.focus(); })()`);
+    ok(await pasteOn("T.ui().shadow.activeElement", true) === false, 'a clipboard with text as well, in a text field, pastes the text (the image is not taken)');
+    await ev('T.ui().setLevel("map")'); await waitFor('!!T.q("#map")');
+    await settle();
     // the setting changes where the next one goes
     await ev('app.plugins.plugins.archipelago.settings.archipelagoFolder = " /Elsewhere//Figs/ "');
     await dropPng('second one.png');
