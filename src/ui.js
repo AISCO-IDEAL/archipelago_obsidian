@@ -97,7 +97,7 @@ const S = {
   sourceOpen: new Set(), highlight: null, conflict: null, fade: false,
   // LaTeX and PDF: what the vault has for them (templates, .bib files), the last compile and the PDF shown
   tex: { info: null, templates: null, compiling: false, result: null, pdf: null, pdfFor: null, showLog: false, scrollTo: null,
-    outside: false, report: null, syncing: false },
+    outside: false, report: null, syncing: false, preview: null, installing: false, pending: null },
 };
 let undoStack = [], redoStack = [], breakUndo = true, lastChange = 0, depth = 0;
 let destroyed = false, fitTimer = null;
@@ -156,11 +156,15 @@ const sameCell = (a, b) => !!a && !!b && a.id === b.id && a.r === b.r && a.c ===
 // may be changed by someone else at any time (LiveSync, Syncthing, git, an editor). Three texts
 // keep that from losing work:
 //   knownDisk  what the file held when we last read or wrote it,
-//   base       the last text that came from outside (at open, or the last external change), the
-//              ancestor both sides grew from,
+//   base       the last text that came from outside (at open, or the last external change),
+//   seen       the versions we read or wrote lately (oldest first), base among them,
 //   ours       what is open now.
-// When the file differs from knownDisk, base / ours / theirs are merged line by line (core.js).
+// When the file differs from knownDisk, ours and theirs are merged line by line (core.js) over the version of `seen` that
+// theirs grew from: a sync tool may bring back one of our own earlier writes (LiveSync does, while one types), or another
+// device's edit of an older version.
 
+let seen = [];   // see above; a few dozen texts at most
+const remember = t => { if (seen[seen.length - 1] !== t) seen.push(t); if (seen.length > 40) seen.shift(); };
 let knownDisk = '', base = '', inflight = null, saveTimer = null, saving = false, failing = false, queue = Promise.resolve();
 const graveyard = new Map();   // images moved to the trash after a save: path -> bytes, so that undo can bring one back
 
@@ -200,6 +204,7 @@ async function load() {
   const text = await host.read();
   if (destroyed) return;
   knownDisk = base = text;
+  seen = [text];
   undoStack = []; redoStack = [];
   adopt(text);
   S.needsFit = true;
@@ -251,6 +256,7 @@ async function save() {
       if (written !== null && result === written) {
         const before = knownDisk;
         knownDisk = written;
+        remember(written);
         // an image this document no longer uses goes to the trash, with a copy kept here for undo
         if (host.tidyFigures) host.tidyFigures(before, written).then(gone => { for (const g of gone) if (g.data) graveyard.set(g.path, g.data); }).catch(() => {});
         setStatus('Saved ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
@@ -306,12 +312,21 @@ function mergeFromDisk(disk) {
     // Nothing of ours is unsaved: take the file as it is.
     adopt(disk);
     base = disk;
+    remember(disk);
     undoStack = []; redoStack = [];
     setStatus('Updated from the file');
     requestRender();
     return;
   }
-  const r = C.mergeDocs(base, ours, disk, saved);
+  const from = C.closestBase([...seen, base], disk);
+  remember(disk);
+  const r = C.mergeDocs(from, ours, disk, saved);
+  if (!r.conflicts && r.text === ours) {
+    // Nothing in the file that we do not have (an earlier version of ours came back): write ours again, keep the undo.
+    base = disk;
+    docChanged();
+    return;
+  }
   if (r.conflicts) {
     // Autosave stays off until the conflicts are decided.
     clearTimeout(saveTimer); saveTimer = null;
@@ -830,7 +845,11 @@ function ungroupSelection() {
   const gids = [];
   for (const s of S.doc.sections) {
     const of = C.groupOf(s);
-    s.paragraphs.forEach((p, k) => { if (S.selection.has(p.id) && of[k] !== null && !gids.includes(of[k])) gids.push(of[k]); });
+    s.paragraphs.forEach((p, k) => {
+      // a selected subsection itself, or the innermost one that holds a selected card
+      const g = S.selection.has(p.id) && C.kind(p) === 'group' ? p.id : S.selection.has(p.id) ? of[k] : null;
+      if (g && !gids.includes(g)) gids.push(g);
+    });
   }
   act(() => gids.forEach(removeGroup));
 }
@@ -851,7 +870,20 @@ function objectsIn(r) {
 /** Delete the selection; a section takes its claims with it, links touching removed claims go too. */
 function deleteSelection() {
   if (!S.selection.size) return;
-  const sel = S.selection;
+  // a selected subsection goes with everything in it (as a selected island does)
+  const sel = new Set(S.selection);
+  let prose = 0, claims = 0;
+  for (const s of S.doc.sections) {
+    if (sel.has(s.id)) continue;
+    for (const p of [...s.paragraphs]) {
+      if (!S.selection.has(p.id) || C.kind(p) !== 'group') continue;
+      for (const q of s.paragraphs.slice(s.paragraphs.indexOf(p), C.subtreeEnd(s, p.id) ?? s.paragraphs.length)) {
+        if (!sel.has(q.id) && C.isCard(q)) { claims++; if (C.trimmed(q.text) !== '') prose++; }
+        sel.add(q.id);
+      }
+    }
+  }
+  if (prose && !win().confirm(`Delete this subsection with ${claims} claims, ${prose} of them with prose?`)) return;
   act(() => {
     const gone = new Set();
     for (const s of S.doc.sections) if (sel.has(s.id)) { s.paragraphs.forEach(p => gone.add(p.cid)); gone.add(s.sid); }
@@ -1393,6 +1425,7 @@ function buildMap(main) {
   });
 
   mapEl.addEventListener('pointermove', e => {
+    S.pointerWorld = toWorld(local(e));
     if (S.linkingFrom) { S.linkPointer = toWorld(local(e)); layoutMap(); }
   });
 
@@ -1464,7 +1497,7 @@ function islandEl(s, i) {
       inp.addEventListener('blur', () => { if (!rendering) commit(); });
       region.append(inp);
     } else {
-      const label = h('div', { class: 'glabel', title: p.claim ? p.claim + ' (click to rename)' : 'Click to rename', data: { gid } }, C.groupName(p) || 'Untitled group');
+      const label = h('div', { class: 'glabel', title: (p.claim ? p.claim + '\n' : '') + 'Click to select, double-click to rename, right-click for more', data: { gid } }, C.groupName(p) || 'Untitled group');
       label.addEventListener('contextmenu', e => {
         e.preventDefault(); e.stopPropagation();
         showMenu(e.clientX, e.clientY, [
@@ -1501,8 +1534,15 @@ function islandEl(s, i) {
     },
     end: () => { if (S.groupDrag) endGroupDrag(); else endIslandDrag(); },
     click: (ev, tgt) => {
+      // a click on a subsection's label selects it (Delete removes it with its contents, Ctrl+Shift+G keeps the contents); a double click renames it
       const label = tgt.closest && tgt.closest('.glabel');
-      if (label) { S.editingGroup = label.dataset.gid; requestRender(); return; }
+      if (label) {
+        const gid = label.dataset.gid;
+        if (isDoubleTap('group:' + gid)) { S.editingGroup = gid; requestRender(); return; }
+        select(gid, ev.shiftKey);
+        layoutMap();
+        return;
+      }
       const onTitle = tgt.closest && tgt.closest('.head');
       if (onTitle && isDoubleTap('title:' + id)) { S.editingTitle = id; requestRender(); return; }
       if (!onTitle) isDoubleTap('');
@@ -1778,6 +1818,7 @@ function layoutMap() {
     for (const g of lay.groups) {
       const rg = regionEls.get(g.id);
       if (!rg) continue;
+      rg.classList.toggle('selected', S.selection.has(g.id));
       // The island's 1 px border shifts its children.
       rg.style.left = (g.rect.x - o.x - 1) + 'px'; rg.style.top = (g.rect.y - o.y - 1) + 'px';
       rg.style.width = g.rect.w + 'px'; rg.style.height = g.rect.h + 'px';
@@ -2162,6 +2203,65 @@ function paragraphEditor(p) {
   return h('div', { class: 'pwrap' }, view, ta);
 }
 
+/** A claim field of Prose, shown with its styles and links until it is focused, as the paragraphs are: the text field lies
+ *  invisibly on top, and a click on a link opens it. `cls` is given to the shown text too, so both look the same. */
+function richClaim(ta, cls) {
+  const view = h('div', { class: 'cview ' + (cls || '') });
+  const paint = () => view.replaceChildren(...(ta.value ? richNodes(ta.value) : [h('span', { class: 'ph' }, ta.placeholder)]));
+  paint();
+  ta.addEventListener('input', paint);
+  ta.addEventListener('mousedown', e => {
+    if (e.button !== 0 || shadow.activeElement === ta) return;
+    const hit = [...view.querySelectorAll('.r-link')].find(l => [...l.getClientRects()].some(r => e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom));
+    if (hit) { e.preventDefault(); openLink({ link: hit.dataset.link, url: !!hit.dataset.url }); }
+  });
+  return h('div', { class: 'cwrap' }, ta, view);   // the field first: a query for the field by its class finds it, not the view
+}
+
+const IMAGE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/bmp': 'bmp', 'image/tiff': 'tiff' };
+
+/** The image files on the clipboard (a screenshot, an image copied from a browser or an editor), named the way Obsidian names a
+ *  pasted image when they have no name of their own. */
+function clipboardImages(e) {
+  const out = [], stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+  for (const f of [...(e.clipboardData ? e.clipboardData.files : [])]) {
+    const extn = IMAGE_TYPES[f.type];
+    if (!extn) continue;
+    const named = f.name && f.name !== 'image.png' && /\.[A-Za-z0-9]+$/.test(f.name);
+    out.push(named ? f : new (win().File)([f], `Pasted image ${stamp}${out.length ? '-' + out.length : ''}.${extn}`, { type: f.type }));
+  }
+  return out;
+}
+
+/** Pasted images become figures: on the Map where the pointer last was (else the middle of the view), in Prose below the paragraph
+ *  that has the focus (else at the end of the section that was touched last). */
+async function pasteImages(files) {
+  let rs;
+  try { rs = await host.importImages(files); } catch { setStatus('Could not add the image'); return; }
+  if (!rs.length || destroyed) return;
+  if (S.level === 'map') {
+    const c = S.pointerWorld || toWorld({ x: S.viewport.w / 2, y: S.viewport.h / 2 });
+    rs.forEach((r, k) => addFigureRef(r, { x: c.x + k * 30, y: c.y + k * 30 }));
+    return;
+  }
+  const row = shadow.activeElement && shadow.activeElement.closest ? shadow.activeElement.closest('.prow') : null;
+  const s = (row && section(row.dataset.sec)) || section(S.lastSection) || S.doc.sections[S.doc.sections.length - 1];
+  if (!s) { setStatus('Add a section first'); return; }
+  act(() => {
+    let after = row && row.dataset.sec === s.id ? row.dataset.id : null;
+    const r0 = islandRect(s);
+    for (const r of rs) {
+      const p = C.newParagraph({ claim: `What ${r.name} shows`, text: `![${r.name}](${r.rel})`, pos: { x: r0.x + r0.w + 60, y: r0.y }, autoPlace: true });
+      const k = after ? s.paragraphs.findIndex(q => q.id === after) : -1;
+      if (k < 0 || k + 1 >= s.paragraphs.length) insert(p, s.id, { kind: 'end' });
+      else insert(p, s.id, { kind: 'before', id: s.paragraphs[k + 1].id, group: C.groupOf(s)[k] });
+      after = p.id;
+    }
+    C.assignIDs(S.doc);
+    S.lastSection = s.id;
+  });
+}
+
 /** A single-paragraph text field that grows: Enter does not insert a line break. */
 function lineField(cls, value, placeholder, onInput) {
   const ta = h('textarea', { class: cls, rows: 1, placeholder, value });
@@ -2219,9 +2319,10 @@ function renderProse(main) {
         b.addEventListener('input', () => change(() => { const q = paragraph(id); if (q) C.setGroupName(q, b.value); }));
         let a;
         if (p.cid || p.claim) {
-          a = lineField('gm claim', p.claim, 'add claim', v => change(() => { const q = paragraph(id); if (q) q.claim = v; }));
-          a.dataset.key = 'claim:' + id;
-          styleable(a);
+          const f = lineField('gm claim', p.claim, 'add claim', v => change(() => { const q = paragraph(id); if (q) q.claim = v; }));
+          f.dataset.key = 'claim:' + id;
+          styleable(f);
+          a = richClaim(f, 'gm claim');
         } else {
           a = h('input', { class: 'gm', value: C.groupName(p), placeholder: 'group' });
           a.addEventListener('input', () => { change(() => { const q = paragraph(id); if (q) C.setGroupName(q, a.value); }); b.value = a.value; });
@@ -2242,7 +2343,7 @@ function renderProse(main) {
         const t = shadow.querySelector(`.prow[data-id="${id}"] .pedit`);
         if (t) { e.preventDefault(); t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
       });
-      const note = h('div', { class: 'mnote' }, claimField);
+      const note = h('div', { class: 'mnote' }, richClaim(claimField));
       const dots = p.needs.filter(cid => deps.has(cid)).map(cid => {
         const [did, si] = deps.get(cid);
         const d = h('b', { title: 'Depends on ' + cid, style: { '--hue': hue(si) } });
@@ -2333,18 +2434,43 @@ function templateOf() {
   return list.find(t => t.name === want) || list.find(t => t.name === 'article') || list[0];
 }
 
+/** The citation keys that are known: those of the folder's .bib files, and those the PDF is made with from the library (see
+ *  `refreshPending`). Null when the folder has not been looked at yet. */
+function knownKeys() {
+  const info = S.tex.info;
+  return info ? new Set([...info.bibKeys, ...(S.tex.pending ? S.tex.pending.found : [])]) : null;
+}
+
 let latexCache = { key: null, value: null };
 /** The document as LaTeX now: { tex, warnings, cites, … } (see latex.js). */
 function latexResult() {
-  const info = S.tex.info, t = templateOf();
-  const key = [currentText(), t.name, t.text, info ? info.bibFiles.join(',') + '|' + [...info.bibKeys].join(',') : ''].join('\0');
+  const info = S.tex.info, t = templateOf(), known = knownKeys();
+  const key = [currentText(), t.name, t.text, info ? info.bibFiles.join(',') + '|' + [...known].join(',') : ''].join('\0');
   if (latexCache.key === key) return latexCache.value;
   const value = Latex.toLatex(S.doc, {
     template: t.text, figurePath: host.latex ? host.latex.figurePath : null,
-    bibFiles: info ? info.bibFiles : [], bibKeys: info ? info.bibKeys : null,
+    bibFiles: info ? info.bibFiles : [], bibKeys: known,
   });
   latexCache = { key, value };
   return value;
+}
+
+/** The template this computer shows the PDF with, when it is not the document's: chosen in the PDF view, kept per computer and
+ *  document (not in the note), so everyone may preview with a template of their own. The .tex in the folder, which goes to
+ *  Overleaf and comes back from it, is always made with the document's template. */
+function previewTemplateOf() {
+  const want = S.tex.preview, list = S.tex.templates || Latex.BUILTIN;
+  if (!want || want === templateOf().name) return null;
+  return list.find(t => t.name === want) || null;
+}
+let previewCache = { key: null, tex: null };
+/** The LaTeX the PDF is made from: the document's, or the same text in the preview template. */
+function pdfTex() {
+  const t = previewTemplateOf(), doc = latexResult().tex;
+  if (!t) return doc;
+  const key = doc + '\0' + t.name + '\0' + t.text;
+  if (previewCache.key !== key) previewCache = { key, tex: Latex.toLatex(S.doc, { ...exportOpts(), template: t.text }).tex };
+  return previewCache.tex;
 }
 
 /** Copy the entries the text cites from a Zotero export in the Archipelago folder into the document's .bib. */
@@ -2356,21 +2482,30 @@ async function syncBib() {
   if (r.added.length) { S.tex.info = await host.latex.info(); setStatus(`Added to the .bib: ${r.added.join(', ')}`); }
 }
 
+/** What the text cites that the folder's .bib lacks and the library can supply (a Zotero export, literature notes). The PDF is made
+ *  with these entries from the cache; the .bib itself is only extended when the project is synced with Overleaf or zipped. */
+async function refreshPending() {
+  if (!host.latex || !host.latex.pendingBib) return;
+  const cites = [...latexResult().cites];
+  S.tex.pending = cites.length ? await host.latex.pendingBib(cites) : { found: [], entries: [], missing: [] };
+}
+
 /** Ask the vault for templates and .bib files again (they may have changed since), and compile for the PDF view. */
 async function enterLatex() {
   if (!host.latex) return;
   try {
-    await syncBib();
     const [templates, info] = await Promise.all([host.latex.templates(), host.latex.info()]);
     if (destroyed) return;
     S.tex.templates = templates;
     S.tex.info = info;
+    await refreshPending();
+    if (S.tex.preview === null && host.latex.previewTemplate) S.tex.preview = host.latex.previewTemplate.get() || '';
     // the .tex was changed outside (another editor) since Archipelago wrote it: offered to be taken over
     const file = await host.latex.readTex();
     S.tex.outside = !!(file.text && file.base && FromLatex.norm(file.text) !== FromLatex.norm(file.base) && FromLatex.norm(file.text) !== FromLatex.norm(latexResult().tex));
     if (S.level === 'pdf') {
       if (!S.tex.pdf) { const old = await host.latex.readPdf(); if (old && !S.tex.pdf) S.tex.pdf = old; }   // the last PDF while the new one is made
-      if (S.tex.pdfFor !== latexResult().tex) compile();
+      if (S.tex.pdfFor !== pdfTex()) compile();
     }
   } catch (e) {
     setStatus('LaTeX: ' + (e.message || e));
@@ -2382,24 +2517,42 @@ async function enterLatex() {
 async function compile() {
   if (!host.latex || S.tex.compiling) return;
   if (!S.tex.info) { await enterLatex(); if (S.tex.compiling) return; }
-  if (!(await guardOutside())) return;
-  try { await syncBib(); } catch { /* the .bib may be missing: the warnings say so */ }
-  const tex = latexResult().tex;
+  try { await refreshPending(); } catch { /* the warnings say what is missing */ }
+  const src = pdfTex();   // the PDF is made in the cache: no file of the vault is written or asked about
   S.tex.compiling = true;
-  setStatus('Compiling…');
+  setStatus(S.tex.installing ? 'Downloading Tectonic…' : 'Compiling…');
   requestRender();
   let res;
-  try { res = await host.latex.compile(tex); } catch (e) { res = { ok: false, pdf: null, log: '', errors: [], message: String(e.message || e) }; }
+  try { res = await host.latex.compile(src, S.tex.pending && S.tex.pending.entries.length ? S.tex.pending.entries.join('\n\n') + '\n' : ''); } catch (e) { res = { ok: false, pdf: null, log: '', errors: [], message: String(e.message || e) }; }
   if (destroyed) return;
   S.tex.compiling = false;
-  res.tex = tex;
-  res.errors = (res.errors || []).map(e => ({ ...e, key: e.line ? Latex.keyAtLine(tex, e.line) : '' }));
+  res.tex = src;
+  res.errors = (res.errors || []).map(e => ({ ...e, key: e.line ? Latex.keyAtLine(src, e.line) : '' }));
   S.tex.result = res;
-  if (res.ok && res.pdf) { S.tex.pdf = res.pdf; S.tex.pdfFor = tex; }
-  setStatus(res.ok ? 'PDF made ' + time() : 'LaTeX failed');
+  if (res.ok && res.pdf) { S.tex.pdf = res.pdf; S.tex.pdfFor = src; }
+  setStatus(res.ok ? 'PDF made ' + time() : res.needsTectonic ? 'Tectonic is not downloaded yet' : 'LaTeX failed');
   requestRender();
   // the document changed while it compiled: once more, so the PDF shows what is there
-  if (S.level === 'pdf' && res.ok && latexResult().tex !== tex) compile();
+  if (S.level === 'pdf' && res.ok && pdfTex() !== src) compile();
+}
+
+/** Download the LaTeX engine (Tectonic) once, then compile. */
+async function installEngine() {
+  if (!host.latex || !host.latex.installTectonic || S.tex.installing) return;
+  S.tex.installing = true;
+  setStatus('Downloading Tectonic…');
+  requestRender();
+  try {
+    await host.latex.installTectonic();
+    S.tex.installing = false;
+    setStatus('Tectonic is ready. The first PDF takes longer: it fetches the LaTeX packages it needs.');
+    compile();
+  } catch (e) {
+    S.tex.installing = false;
+    S.tex.result = { ok: false, pdf: null, log: '', errors: [], message: 'Tectonic could not be downloaded: ' + (e.message || e), tex: pdfTex() };
+    setStatus('Download failed');
+    requestRender();
+  }
 }
 
 // ---- the way back: an edited .tex into the document ----
@@ -2407,7 +2560,7 @@ async function compile() {
 /** Take the edits of `theirs` (a .tex) over into the document, as one undo step; `base`: the .tex as last written, or null. */
 const exportOpts = () => {
   const info = S.tex.info;
-  return { template: templateOf().text, figurePath: host.latex.figurePath, bibFiles: info ? info.bibFiles : [], bibKeys: info ? info.bibKeys : null };
+  return { template: templateOf().text, figurePath: host.latex.figurePath, bibFiles: info ? info.bibFiles : [], bibKeys: knownKeys() };
 };
 
 function takeOver(theirs, base) {
@@ -2462,7 +2615,7 @@ async function takeOverFile() {
   requestRender();
 }
 
-/** Before Archipelago writes the .tex (compile, zip, sync): if another editor changed it since, its changes are taken over first,
+/** Before Archipelago writes the .tex (zip, sync; making a PDF writes nothing in the vault): if another editor changed it since, its changes are taken over first,
  *  or, when the user says so, it is overwritten (and kept beside it). False when the user cancels. */
 async function guardOutside(auto) {
   const f = await host.latex.readTex(), norm = FromLatex.norm;
@@ -2553,6 +2706,28 @@ async function syncOverleaf(auto = false) {
     S.tex.lastSync = Date.now();
     requestRender();
   }
+}
+
+/** Write the project into the document's folder, as the zip and the Overleaf sync do first: the .tex, the .bib entries the library
+ *  supplies, images from elsewhere and the latexmkrc. Making a PDF writes none of these; this is for working on the folder with
+ *  other tools (latexmk, an editor). */
+async function writeProjectFiles() {
+  if (!host.latex) return;
+  try {
+    if (!(await enterLatexInfo()) || !(await guardOutside())) return;
+    await syncBib();
+    await host.latex.writeTex(latexResult().tex);
+    S.tex.outside = false;
+    host.notice('Archipelago: wrote the .tex, .bib and images into ' + S.tex.info.folder);
+    setStatus('Project written ' + time());
+  } catch (e) { host.notice('Archipelago: could not write the project files: ' + (e.message || e)); }
+  requestRender();
+}
+/** The folder's .bib files and templates, looked at once. */
+async function enterLatexInfo() {
+  if (S.tex.info) return true;
+  await enterLatex();
+  return !!S.tex.info;
 }
 
 async function overleafZip() {
@@ -2663,7 +2838,8 @@ function latexNotes(r) {
   }
   for (const w of r.warnings) item('warn', w.text, w.key ? () => showInProse(w.key) : null, w.key ? 'show in Prose' : null);
   if (res && !res.ok) {
-    if (res.message) item('error pre', res.message);
+    if (res.needsTectonic) item('outside', S.tex.installing ? 'Downloading Tectonic…' : res.message, S.tex.installing ? null : () => installEngine(), S.tex.installing ? null : 'download and compile');
+    else if (res.message) item('error pre', res.message);
     for (const e of res.errors) {
       const go = e.line && res.tex === r.tex ? () => { S.tex.scrollTo = { line: e.line }; if (S.level !== 'latex') setLevelInternal('latex'); else requestRender(); } : null;
       item('error', e.text, go, e.line ? 'line ' + e.line + (e.key ? ' · ' + e.key : '') : null);
@@ -2682,9 +2858,18 @@ function latexNotes(r) {
 function latexBar(r, forPdf) {
   const L = host.latex, info = S.tex.info;
   const list = S.tex.templates || Latex.BUILTIN, cur = templateOf();
-  const sel = h('select', { class: 'tsel', title: 'LaTeX template (kept in the document as "latex:" in its front matter; your own are in latex_templates/)' },
-    list.map(t => h('option', { value: t.name, selected: t.name === cur.name }, t.name)));
-  sel.addEventListener('change', () => change(() => Latex.setFront(S.doc, 'latex', sel.value)));
+  // LaTeX view: the document's template (a change of the document, like any edit).
+  // PDF view: the template this computer previews with. That choice changes nothing in the document, the vault or Overleaf; the
+  // document's own template is the one marked. Only the button "Make it the document's template" (after a confirmation) does.
+  const now = forPdf ? previewTemplateOf() : null;
+  const sel = forPdf && L.previewTemplate
+    ? h('select', { class: 'tsel', title: 'The template this computer shows the PDF with. The choice stays on this computer: the document, the .tex and Overleaf keep the document\'s template.' },
+      list.map(t => h('option', { value: t.name, selected: t.name === (now ? now.name : cur.name) }, t.name === cur.name ? t.name + ' (the document\'s)' : 'Preview: ' + t.name)))
+    : h('select', { class: 'tsel', title: 'LaTeX template (kept in the document as "latex:" in its front matter; your own are in latex_templates/)' },
+      list.map(t => h('option', { value: t.name, selected: t.name === cur.name }, t.name)));
+  if (forPdf && L.previewTemplate) sel.addEventListener('change', () => { S.tex.preview = sel.value === cur.name ? '' : sel.value; L.previewTemplate.set(S.tex.preview); compile(); });
+  else sel.addEventListener('change', () => change(() => Latex.setFront(S.doc, 'latex', sel.value)));
+  const adopt = now ? h('button', { class: 'tb', title: 'Make the preview template the document\'s template, for everyone who works on it', onclick: () => adoptPreview(now) }, 'Make it the document\'s template…') : null;
   const btn = (label, title, f, cls) => h('button', { class: 'tb' + (cls ? ' ' + cls : ''), title, onclick: f }, label);
   const right = h('div', { class: 'grp' });
   if (!forPdf) {
@@ -2698,20 +2883,37 @@ function latexBar(r, forPdf) {
     const rr = ev.currentTarget.getBoundingClientRect();
     showMenu(rr.left, rr.bottom + 2, [
       { label: 'Copy the LaTeX', action: () => { win().navigator.clipboard.writeText(r.tex); setStatus('LaTeX copied'); } },
+      { label: 'Write the project files into the folder (.tex, .bib, images)', action: () => writeProjectFiles() },
       { label: 'Save a clean copy (without %% apg comments)', action: async () => {
         const clean = Latex.toLatex(S.doc, { template: cur.text, figurePath: L.figurePath, bibFiles: info ? info.bibFiles : [], markers: false }).tex;
         await L.prepareProject();
         host.notice('Archipelago: saved ' + await L.saveClean(clean));
       } },
+      ...(S.tex.pdf ? [{ label: 'Save a copy of the PDF in the document\'s folder', action: async () => host.notice('Archipelago: saved ' + await L.savePdf(S.tex.pdf)) }] : []),
       { sep: true },
       ...(info ? info.bibFiles.map(b => ({ label: `Open ${b}.bib (${info.bibKeys.size} entries)`, action: () => L.openPath(`${info.folder}/${b}.bib`) })) : []),
       { label: 'Show the folder', action: () => L.showFolder() },
     ]);
   }));
-  right.append(btn(S.tex.compiling ? 'Compiling…' : forPdf ? 'Compile' : 'Compile ▸ PDF', 'Write the .tex and make the PDF', () => {
+  right.append(btn(S.tex.compiling ? 'Compiling…' : forPdf ? 'Compile' : 'Compile ▸ PDF', 'Make the PDF (on this computer only: no file of the vault is written)', () => {
     if (!forPdf) setLevelInternal('pdf'); else compile();
   }, 'primary'));
-  return h('div', { class: 'texbar' }, h('div', { class: 'grp' }, sel), right);
+  return h('div', { class: 'texbar' }, h('div', { class: 'grp' }, sel, adopt), right);
+}
+
+/** The preview template becomes the document's template, after the user has said yes: the note changes (`latex:`), so everyone who
+ *  has the document gets it, and the next Overleaf sync brings its preamble there. */
+async function adoptPreview(t) {
+  const ok = await host.choose('Make "' + t.name + '" the document\'s template?',
+    'The document and its .tex, which goes to Overleaf, would use this template from now on, for everyone who works on the document. '
+    + 'The next Overleaf sync brings the new preamble to Overleaf. Everyone\'s own previews stay as they are.',
+    [{ label: 'Make it the document\'s template', value: true, cta: true }]);
+  if (ok !== true) return;
+  S.tex.preview = '';
+  host.latex.previewTemplate.set('');
+  act(() => Latex.setFront(S.doc, 'latex', t.name));
+  setStatus('The document\'s template is now ' + t.name);
+  compile();
 }
 
 /** The edited LaTeX of the editor into the document. */
@@ -2775,7 +2977,7 @@ function renderPdf(main) {
     pdfShown = null;
   }
   sc.querySelector('.texbar').replaceWith(latexBar(r, true));
-  const notes = latexNotes(r), stale = S.tex.pdf && S.tex.pdfFor !== r.tex && !S.tex.compiling;
+  const notes = latexNotes(r), stale = S.tex.pdf && S.tex.pdfFor !== pdfTex() && !S.tex.compiling;
   const pn = h('div', { class: 'pdfnotes' }, notes, stale && h('div', { class: 'tn stale' }, 'The document changed since this PDF was made. Compile to update it.'));
   sc.querySelector('.pdfnotes').replaceWith(pn);
   const pages = sc.querySelector('.pages');
@@ -2849,6 +3051,15 @@ rootEl.addEventListener('keydown', e => {
 rootEl.addEventListener('contextmenu', e => { if (!isTextTarget(shadow.activeElement) || !isTextTarget(e.target)) e.preventDefault(); });
 // Pinching and Ctrl+scroll must not zoom Obsidian itself.
 rootEl.addEventListener('wheel', e => { if (e.ctrlKey || e.metaKey) e.preventDefault(); }, { passive: false });
+// Ctrl+V with an image on the clipboard adds a figure (Map and Prose). A clipboard with text, in a text field, pastes the text.
+rootEl.addEventListener('paste', e => {
+  if (S.conflict || (S.level !== 'map' && S.level !== 'prose')) return;
+  const files = clipboardImages(e);
+  if (!files.length) return;
+  if (isTextTarget(e.target) && e.clipboardData.getData('text/plain')) return;
+  e.preventDefault(); e.stopPropagation();
+  pasteImages(files);
+});
 // A click on the map gives this view the keyboard focus (the map itself has no focusable element).
 rootEl.addEventListener('pointerdown', e => {
   if (openMenus.length && !e.target.closest('.menu')) closeMenu();
@@ -2891,6 +3102,7 @@ return {
     }
     return false;
   },
+  writeProject: writeProjectFiles,
   group: groupSelection, ungroup: ungroupSelection, undo, redo, check: () => C.check(currentText()),
   hasConflict: () => !!S.conflict, resolveConflicts, chooseAll, saveNow: save,
   /** The open text when a conflict is waiting (to keep it somewhere before the view closes), else null. */

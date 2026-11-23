@@ -7,14 +7,14 @@
 // wrapped so that a document goes to this view instead (see `redirect`).
 
 const {
-  Plugin, FileView, FuzzySuggestModal, MarkdownView, Modal, Notice, Scope, TFile, TFolder, WorkspaceLeaf, PluginSettingTab, Setting, addIcon, normalizePath, loadPdfJs,
+  Plugin, FileView, FuzzySuggestModal, MarkdownView, Modal, Notice, Scope, TFile, TFolder, WorkspaceLeaf, PluginSettingTab, Setting, addIcon, normalizePath, loadPdfJs, requestUrl,
 } = require('obsidian');
 
 const VIEW_TYPE = 'archipelago-view';
 const EXT = 'apg';           // legacy documents, which sync tools treat as binary
 const DOC_EXT = 'md';        // what new documents are
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'avif'];
-const DEFAULTS = { autosaveSeconds: 1.5, archipelagoFolder: 'Archipelago', latexCommand: 'pdflatex' };
+const DEFAULTS = { autosaveSeconds: 1.5, archipelagoFolder: 'Archipelago' };
 const OLD_DEFAULT_FOLDER = '99_attachments_c_docs/archipelago';   // the default before 0.3
 /** The id of the Overleaf token in Obsidian's secret storage (the system's keychain), where Obsidian has one (1.11.4). */
 const TOKEN_ID = 'archipelago-overleaf-token';
@@ -146,8 +146,9 @@ async function storeFigure(app, doc, name, data, root) {
 }
 
 // ---- LaTeX and PDF ----
-// The .tex is written next to the document's figures and compiled there with pdflatex (bibtex or biber when the text
-// cites); the auxiliary files go to a build folder outside the vault, only the .pdf comes back into it.
+// The PDF is made with Tectonic in a build folder outside the vault (see compileNow): making it writes nothing into the vault.
+// The .tex, the .bib entries, images from elsewhere and a latexmkrc are written into the document's folder only when the project
+// is synced with Overleaf or zipped (writeProject); a PDF only when the user asks for a copy.
 
 // Files of types Obsidian does not know (.bib, .tex, .cls, …) are not in the vault's index unless the setting "Detect all file
 // extensions" is on (and not at all after a restart without it), so everything of that kind goes through the adapter, which
@@ -185,17 +186,95 @@ const baseOf = p => p.slice(p.lastIndexOf('/') + 1);
 /** A name for files that LaTeX, BibTeX and Overleaf take: no blanks or special characters (accents are dropped). */
 const fileSlug = name => name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/ß/g, 'ss').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'document';
 
-/** Obsidian from Flathub runs in a sandbox. Its TeX is Flathub's TeX Live extension, which the app takes (on its PATH,
- *  /app/texlive/bin) once installed: no program outside the sandbox is ever started. */
-const inFlatpak = () => { try { return require('fs').existsSync('/.flatpak-info'); } catch { return false; } };
-function flatpakTexHint() {
-  let branch = '';
-  try { branch = (require('fs').readFileSync('/.flatpak-info', 'utf8').match(/^runtime=.*\/([^/\s]+)\s*$/m) || [])[1] || ''; } catch { /* unknown */ }
-  return 'Obsidian runs as a Flatpak: install TeX Live for it once, in a terminal, then restart Obsidian:\n'
-    + `flatpak install flathub org.freedesktop.Sdk.Extension.texlive${branch ? '//' + branch : ''}`;
+// ---- Tectonic: the LaTeX engine Archipelago downloads itself ----
+// One program (XeTeX and BibTeX inside), downloaded once from its GitHub release and checked against the SHA-256 below. It
+// fetches the LaTeX packages a document needs from its bundle, a fixed TeX Live snapshot per Tectonic version, and keeps them
+// in a cache: everyone with the same plugin version typesets with the same packages, and nobody installs TeX.
+const TECTONIC_VERSION = '0.17.0';
+const TECTONIC_ASSETS = {   // platform-arch -> [target, archive, sha256]
+  'linux-x64': ['x86_64-unknown-linux-musl', 'tar.gz', '8533d07f9ccbd7a65824b9e0459041bca34af1eb33daba48f59215593753a3b7'],
+  'linux-arm64': ['aarch64-unknown-linux-musl', 'tar.gz', 'b10954a95404f3ab2328d2fa59a5ebab8e657f893fab096f98be8db7c0c979b8'],
+  'darwin-x64': ['x86_64-apple-darwin', 'tar.gz', '7c90ef5b6ddb1eb1937e4337add5237b79338e4b9676459fa91187d24d6cdf80'],
+  'darwin-arm64': ['aarch64-apple-darwin', 'tar.gz', 'a3f1cac7c5678f01661a92212f58480ae3b0634115d880dbc59e2953ded45667'],
+  'win32-x64': ['x86_64-pc-windows-msvc', 'zip', 'f61ce51f0b0ade1015b7de7ef368541c5424e9756ecbd0d7af97d6d48030845f'],
+};
+/** Under $HOME, which a Flatpak Obsidian sees too: the program, and the packages it fetched (shared by all vaults). */
+const tectonicHome = () => require('path').join(require('os').homedir(), '.cache', 'archipelago-tectonic');
+const tectonicExe = () => require('path').join(tectonicHome(), TECTONIC_VERSION, process.platform === 'win32' ? 'tectonic.exe' : 'tectonic');
+const tectonicInstalled = () => { try { return require('fs').statSync(tectonicExe()).isFile(); } catch { return false; } };
+const tectonicAsset = () => TECTONIC_ASSETS[process.platform + '-' + process.arch] || null;
+
+/** The file `name` of a .tar.gz, or null. */
+function fromTarGz(buf, name) {
+  const tar = require('zlib').gunzipSync(buf);
+  for (let off = 0; off + 512 <= tar.length;) {
+    const head = tar.subarray(off, off + 512);
+    if (head.every(b => b === 0)) break;
+    const str = (a, b) => head.subarray(a, b).toString('latin1').replace(/\0[^]*$/, '');
+    const full = (str(345, 500) ? str(345, 500) + '/' : '') + str(0, 100), size = parseInt(str(124, 136).trim() || '0', 8);
+    const type = String.fromCharCode(head[156] || 48);
+    if ((type === '0' || type === '\0') && full.replace(/^.*\//, '') === name) return tar.subarray(off + 512, off + 512 + size);
+    off += 512 + Math.ceil(size / 512) * 512;
+  }
+  return null;
+}
+/** The file `name` of a .zip, or null. */
+function fromZip(buf, name) {
+  const zlib = require('zlib');
+  let eocd = buf.length - 22;
+  while (eocd >= 0 && buf.readUInt32LE(eocd) !== 0x06054b50) eocd--;
+  if (eocd < 0) return null;
+  const count = buf.readUInt16LE(eocd + 10);
+  for (let k = 0, off = buf.readUInt32LE(eocd + 16); k < count; k++) {
+    const method = buf.readUInt16LE(off + 10), csize = buf.readUInt32LE(off + 20), nlen = buf.readUInt16LE(off + 28);
+    const xlen = buf.readUInt16LE(off + 30), clen = buf.readUInt16LE(off + 32), local = buf.readUInt32LE(off + 42);
+    const file = buf.subarray(off + 46, off + 46 + nlen).toString('utf8');
+    if (file.replace(/^.*[\\/]/, '') === name) {
+      const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28), data = buf.subarray(start, start + csize);
+      return method === 0 ? data : method === 8 ? zlib.inflateRawSync(data) : null;
+    }
+    off += 46 + nlen + xlen + clen;
+  }
+  return null;
 }
 
-/** Where TeX distributions put their programs, for an Obsidian started from the desktop without the shell's PATH (macOS). */
+/** Download Tectonic into tectonicHome() unless it is there, check it, unpack it. Throws with a message for the user.
+ *  One download at a time (the settings and every open document may ask), and a program that is there is never replaced:
+ *  a compile may be running it. */
+let tectonicDownload = null;
+function installTectonic() {
+  if (tectonicInstalled()) return Promise.resolve();
+  if (!tectonicDownload) tectonicDownload = downloadTectonic().finally(() => { tectonicDownload = null; });
+  return tectonicDownload;
+}
+async function downloadTectonic() {
+  const fs = require('fs'), path = require('path'), a = tectonicAsset();
+  if (!a) throw new Error(`there is no Tectonic for this computer (${process.platform}, ${process.arch})`);
+  const [target, kind, sha] = a, file = `tectonic-${TECTONIC_VERSION}-${target}.${kind}`;
+  const url = `https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/${file}`;
+  const r = await requestUrl({ url, throw: false });
+  if (r.status !== 200) throw new Error(`GitHub answered ${r.status} for ${file}`);
+  const buf = Buffer.from(r.arrayBuffer);
+  const got = require('crypto').createHash('sha256').update(buf).digest('hex');
+  if (got !== sha) throw new Error(`${file} is not the expected file (SHA-256 ${got.slice(0, 12)}…, expected ${sha.slice(0, 12)}…): not used`);
+  const exe = path.basename(tectonicExe()), data = kind === 'zip' ? fromZip(buf, exe) : fromTarGz(buf, exe);
+  if (!data || !data.length) throw new Error(`${file} has no ${exe}`);
+  fs.mkdirSync(path.dirname(tectonicExe()), { recursive: true });
+  const tmp = tectonicExe() + '.part';
+  fs.writeFileSync(tmp, data, { mode: 0o755 });
+  fs.renameSync(tmp, tectonicExe());
+}
+
+/** For Overleaf (Overleaf reads it from the project): compile with XeLaTeX, the engine of Tectonic, so Overleaf's PDF is set
+ *  like the one in Obsidian. Written (with the .tex) when the project is synced or zipped, and only when the folder has none,
+ *  so one made by hand stays. */
+const LATEXMKRC = `# Written by Archipelago: compile with XeLaTeX, like Archipelago's engine (Tectonic, which is XeTeX).
+# Delete this file to use the compiler chosen in Overleaf's menu again (Archipelago writes it again only while it is missing).
+$pdflatex = 'xelatex %O %S';
+$lualatex = 'xelatex %O %S';
+`;
+
+/** Where programs (git) are, for an Obsidian started from the desktop without the shell's PATH (macOS). */
 const EXTRA_PATH = { darwin: ['/Library/TeX/texbin', '/opt/homebrew/bin', '/usr/local/bin'], linux: ['/usr/local/bin'], win32: [] };
 
 /** Run a program to its end: { code, out } (stdout and stderr together). `env`: added to Obsidian's; a null value removes one. */
@@ -461,15 +540,21 @@ class ArchipelagoSettings extends PluginSettingTab {
         .onChange(async v => { this.plugin.settings.autosaveSeconds = v; await this.plugin.saveSettings(); }));
     new Setting(el)
       .setName('Archipelago folder')
-      .setDesc('A folder of the vault where Archipelago keeps what belongs to its documents. Every document gets a subfolder named like it, with figures/ (images dropped on a map), <document>.bib (its bibliography), <document>.tex and <document>.pdf. LaTeX templates are in latex_templates/ in this folder: .tex files with placeholders such as {{title}} and {{body}}, which a document picks in its LaTeX view; class and style files there are found when compiling. An image that is deleted from its document is moved to the trash (unless a note or another document links to it); images that are in the vault already are used where they are.')
+      .setDesc('A folder of the vault where Archipelago keeps what belongs to its documents. Every document gets a subfolder named like it, with figures/ (images dropped on a map), <document>.bib (its bibliography) and, when synced with Overleaf or zipped, <document>.tex. A PDF is made in a cache on this computer; a copy goes into the folder only when you ask for it. LaTeX templates are in latex_templates/ in this folder: .tex files with placeholders such as {{title}} and {{body}}, which a document picks in its LaTeX view; class and style files there are found when compiling. An image that is deleted from its document is moved to the trash (unless a note or another document links to it); images that are in the vault already are used where they are.')
       .addText(t => t.setPlaceholder(DEFAULTS.archipelagoFolder).setValue(this.plugin.settings.archipelagoFolder)
         .onChange(async v => { this.plugin.settings.archipelagoFolder = v.trim(); await this.plugin.saveSettings(); }));
     new Setting(el).setName('LaTeX and PDF').setHeading();
     new Setting(el)
-      .setName('LaTeX command')
-      .setDesc('The program that makes the PDF (pdflatex of TeX Live or MiKTeX). bibtex or biber run as well when the text cites. ' + (inFlatpak() ? flatpakTexHint().replace(/\n/g, ' ') : ''))
-      .addText(t => t.setPlaceholder(DEFAULTS.latexCommand).setValue(this.plugin.settings.latexCommand)
-        .onChange(async v => { this.plugin.settings.latexCommand = v.trim(); await this.plugin.saveSettings(); }));
+      .setName('LaTeX engine')
+      .setDesc(`Archipelago makes the PDF with Tectonic ${TECTONIC_VERSION}: one program, downloaded once from GitHub (about 10 to 20 MB, checked against its SHA-256), that fetches the LaTeX packages a document needs the first time it is compiled. Nothing to install, and the same result on every computer. It is XeTeX, so Archipelago also puts a latexmkrc into each document's folder, which makes Overleaf compile with XeLaTeX too.`)
+      .addButton(b => {
+        b.setButtonText(tectonicInstalled() ? 'Downloaded' : 'Download now').setDisabled(tectonicInstalled());
+        b.onClick(async () => {
+          b.setButtonText('Downloading…').setDisabled(true);
+          try { await installTectonic(); new Notice('Archipelago: Tectonic is ready.'); } catch (e) { new Notice('Archipelago: ' + (e.message || e), 15000); }
+          this.display();
+        });
+      });
     new Setting(el)
       .setName('Overleaf Git token')
       .setDesc('For syncing a document with its Overleaf project (needs an Overleaf plan with Git integration). Make one at Overleaf > Account settings > Git integration. '
@@ -529,6 +614,7 @@ module.exports = class ArchipelagoPlugin extends Plugin {
     onView('show-latex', 'Show LaTeX', ui => ui.setLevel('latex'));
     onView('show-pdf', 'Show PDF', ui => ui.setLevel('pdf'));
     onView('compile', 'Compile the PDF', ui => ui.compile());
+    onView('write-project', 'Write the project files into the document folder (.tex, .bib, images)', ui => ui.writeProject());
     onView('overleaf-sync', 'Sync with Overleaf', ui => ui.syncOverleaf());
     onView('fit', 'Fit the whole map in view', ui => ui.fit());
     onView('group', 'Group the selected claims', ui => ui.group());
@@ -778,6 +864,8 @@ module.exports = class ArchipelagoPlugin extends Plugin {
       await writeBinary(app, dest, data);
     };
     for (const [rel, src] of assets) { try { await copy(src, normalizePath(`${dir}/${rel}`)); } catch { /* missing image: the LaTeX has a box and a warning */ } }
+    const rc = normalizePath(`${dir}/latexmkrc`);
+    if (!(await fileExists(app, rc)) && !(await fileExists(app, normalizePath(`${dir}/.latexmkrc`)))) await writeText(app, rc, LATEXMKRC);
     for (const path of (await listDir(app, tdir)).files) {
       if (/\.tex$/i.test(path)) continue;   // the templates themselves
       try { await copy(path, normalizePath(`${dir}/${baseOf(path)}`)); } catch { /* skip */ }
@@ -790,6 +878,29 @@ module.exports = class ArchipelagoPlugin extends Plugin {
     const folder = () => docFolder(doc, plugin.settings), name = () => docSlug(doc);   // the document may be renamed
     const assets = new Map();   // images the last LaTeX refers to that lie outside figures/: dest -> vault path
     const bibPaths = async () => (await listDir(app, folder())).files.filter(f => /\.bib$/i.test(f)).sort((a, b) => baseOf(a).localeCompare(baseOf(b)));
+    const pendingBib = async keys => {
+      const bibPath = normalizePath(`${folder()}/${name()}.bib`);
+      const have = new Set();
+      for (const path of await bibPaths()) for (const k of Latex.bibKeys(await readText(app, path))) have.add(k);
+      const want = [...keys].filter(k => !have.has(k));
+      if (!want.length) return { found: [], entries: [], missing: [] };
+      const root = archRoot(plugin.settings), library = new Map();
+      for (const path of (await listDir(app, root)).files.filter(f => /\.bib$/i.test(f))) {
+        for (const [k, v] of Latex.bibEntries(await readText(app, path))) if (!library.has(k)) library.set(k, v);
+      }
+      // a key that no .bib has: the literature note that carries it in its front matter (ZotFlow's notes have `citationKey`)
+      const left = new Set(want.filter(k => !library.has(k)));
+      if (left.size) {
+        for (const f of app.vault.getMarkdownFiles()) {
+          const fm = (app.metadataCache.getFileCache(f) || {}).frontmatter;
+          if (!fm || !left.has(String(fm.citationKey))) continue;
+          const entry = Latex.bibFromNote(fm);
+          if (entry) { library.set(String(fm.citationKey), entry); left.delete(String(fm.citationKey)); }
+        }
+      }
+      const found = want.filter(k => library.has(k));
+      return { found, entries: found.map(k => library.get(k)), missing: want.filter(k => !library.has(k)) };
+    };
     return {
       templates: () => plugin.latexTemplates(),
       /** Save Overleaf's preamble as a template of `latex_templates/`, named after the document; returns its name. */
@@ -804,34 +915,20 @@ module.exports = class ArchipelagoPlugin extends Plugin {
         const bibs = await bibPaths(), keys = new Set();
         for (const path of bibs) for (const k of Latex.bibKeys(await readText(app, path))) keys.add(k);
         const f = folder();
-        return { folder: f, texPath: normalizePath(`${f}/${name()}.tex`), pdfPath: normalizePath(`${f}/${name()}.pdf`), bibFiles: bibs.map(b => baseOf(b).replace(/\.bib$/i, '')), bibKeys: keys };
+        return { folder: f, texPath: normalizePath(`${f}/${name()}.tex`), bibFiles: bibs.map(b => baseOf(b).replace(/\.bib$/i, '')), bibKeys: keys };
       },
       /** Copy the entries for `keys` that the document's .bib lacks from the .bib files in the Archipelago folder (a Zotero
        *  export, Better BibTeX's auto-export for instance), or build them from the literature notes. Entries are only ever added.
        *  Returns { added, missing } (keys). */
       syncBib: async keys => {
         await plugin.ensureDocFolder(doc);
-        const bibPath = normalizePath(`${folder()}/${name()}.bib`);
-        const have = Latex.bibKeys(await readText(app, bibPath)), want = [...keys].filter(k => !have.has(k));
-        if (!want.length) return { added: [], missing: [] };
-        const root = archRoot(plugin.settings), library = new Map();
-        for (const path of (await listDir(app, root)).files.filter(f => /\.bib$/i.test(f))) {
-          for (const [k, v] of Latex.bibEntries(await readText(app, path))) if (!library.has(k)) library.set(k, v);
-        }
-        // a key that no .bib has: the literature note that carries it in its front matter (ZotFlow's notes have `citationKey`)
-        const left = new Set(want.filter(k => !library.has(k)));
-        if (left.size) {
-          for (const f of app.vault.getMarkdownFiles()) {
-            const fm = (app.metadataCache.getFileCache(f) || {}).frontmatter;
-            if (!fm || !left.has(String(fm.citationKey))) continue;
-            const entry = Latex.bibFromNote(fm);
-            if (entry) { library.set(String(fm.citationKey), entry); left.delete(String(fm.citationKey)); }
-          }
-        }
-        const found = want.filter(k => library.has(k));
-        if (found.length) await writeText(app, bibPath, (await readText(app, bibPath)).replace(/\s*$/, '\n\n') + found.map(k => library.get(k)).join('\n\n') + '\n');
-        return { added: found, missing: want.filter(k => !library.has(k)) };
+        const bibPath = normalizePath(`${folder()}/${name()}.bib`), p = await pendingBib(keys);
+        if (p.found.length) await writeText(app, bibPath, (await readText(app, bibPath)).replace(/\s*$/, '\n\n') + p.entries.join('\n\n') + '\n');
+        return { added: p.found, missing: p.missing };
       },
+      /** What `syncBib` would add, without writing anything: { found: keys, entries: [text], missing: keys }. The PDF is made
+       *  with them (in the cache), so that making a PDF never changes a file of the vault. */
+      pendingBib,
       /** The path \includegraphics takes for a figure path of the document (relative to the .tex), or null when there is no such
        *  image. An image outside the document's figures/ is referred to as figures/ext_<name>, and copied there before compiling. */
       figurePath: rel => {
@@ -844,7 +941,22 @@ module.exports = class ArchipelagoPlugin extends Plugin {
         return dest;
       },
       prepareProject: () => plugin.prepareProject(doc, assets),
-      compile: tex => plugin.compileLatex(doc, tex, assets),
+      /** Make the PDF from `tex` in the cache of this computer. Nothing is written into the vault. `bib`: entries the folder's .bib
+       *  does not have yet (see pendingBib). */
+      compile: (tex, bib) => plugin.compileLatex(doc, tex, assets, bib),
+      /** Put a copy of the PDF into the document's folder (only when the user asks: it is a file that sync tools would carry). */
+      savePdf: async data => {
+        await plugin.ensureDocFolder(doc);
+        const path = normalizePath(`${folder()}/${name()}.pdf`);
+        await writeBinary(app, path, data);
+        return path;
+      },
+      installTectonic: () => installTectonic(),
+      /** The template this computer previews the document with ('' = the document's own): per computer, not in the vault. */
+      previewTemplate: {
+        get: () => plugin.localGet('preview:' + doc.path) || '',
+        set: name => plugin.localSet('preview:' + doc.path, name || null),
+      },
       exportZip: tex => plugin.exportOverleaf(doc, tex, assets),
       /** Write the .tex (and remember it as the base) without compiling. */
       writeTex: tex => plugin.writeProject(doc, tex, assets),
@@ -860,10 +972,12 @@ module.exports = class ArchipelagoPlugin extends Plugin {
         return { pull: (tex, choice) => o.pull(tex, assets, choice), push: tex => o.push(tex, assets), lock: () => o.lock(), unlock: () => o.unlock(), rollback: () => o.rollback() };
       },
       overleafUrl: input => overleafGitUrl(input),
-      /** The PDF made last time, or null. */
+      /** The PDF this computer made last time (from the cache), or null. */
       readPdf: async () => {
-        const path = normalizePath(`${folder()}/${name()}.pdf`);
-        try { return (await fileExists(app, path)) ? await adapterOf(app).readBinary(path) : null; } catch { return null; }
+        try {
+          const b = require('fs').readFileSync(require('path').join(plugin.buildDir(doc), 'main.pdf'));
+          return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+        } catch { return null; }
       },
       pdfjs: () => loadPdfJs(),
       showFolder: async () => {
@@ -919,63 +1033,75 @@ module.exports = class ArchipelagoPlugin extends Plugin {
     return zipPath;
   }
 
-  /** Write `<document>.tex`, compile it, and write `<document>.pdf` next to it.
-   *  Returns { ok, pdf (ArrayBuffer or null), log, errors: [{ line, text }], message }. */
-  async compileLatex(doc, tex, assets) {
+  /** Where this computer builds the document's PDF: outside the vault (under $HOME, which a Flatpak Obsidian sees too). */
+  buildDir(doc) {
+    const adapter = this.app.vault.adapter;
+    return require('path').join(require('os').homedir(), '.cache', 'archipelago-latex', hashOf(adapter.getBasePath() + '/' + doc.path));
+  }
+
+  /** Make the PDF of `tex` with Tectonic, in the cache. Nothing is written into the vault: the .tex, the .bib, the images and the
+   *  PDF there are Overleaf's and the sync tool's, and a PDF made here must not change them (two people making a PDF would
+   *  otherwise write the same files and conflict). The text is `main.tex` of the build folder; the document's folder and the
+   *  templates are searched for figures and class files, and the .bib files of the folder (with the entries `bib` adds) are
+   *  collected into one file there.
+   *  Returns { ok, pdf (ArrayBuffer or null), log, errors: [{ line, text }], message, needsTectonic }. */
+  compileLatex(doc, tex, assets, bib) {
+    // One compile of a document at a time: two would write the same build folder (two tabs of it, a compile that is asked
+    // for while one runs).
+    const key = doc.path;
+    this.compiles = this.compiles || new Map();
+    const run = (this.compiles.get(key) || Promise.resolve()).catch(() => {}).then(() => this.compileNow(doc, tex, assets, bib));
+    this.compiles.set(key, run);
+    run.finally(() => { if (this.compiles.get(key) === run) this.compiles.delete(key); }).catch(() => {});
+    return run;
+  }
+
+  async compileNow(doc, tex, assets, bib) {
     const app = this.app, adapter = app.vault.adapter;
     if (typeof adapter.getBasePath !== 'function') return { ok: false, pdf: null, log: '', errors: [], message: 'Compiling needs Obsidian on a computer.' };
-    const fs = require('fs'), path = require('path'), os = require('os');
-    const folder = docFolder(doc, this.settings), name = docSlug(doc), base = adapter.getBasePath();
-    const texPath = normalizePath(`${folder}/${name}.tex`), pdfPath = normalizePath(`${folder}/${name}.pdf`);
-    try {
-      await this.writeProject(doc, tex, assets);
-    } catch (e) {
-      return { ok: false, pdf: null, log: '', errors: [], message: `Could not write ${texPath}: ${e.message || e}` };
+    if (!tectonicInstalled()) {
+      return { ok: false, pdf: null, log: '', errors: [], needsTectonic: true,
+        message: `To make the PDF, Archipelago downloads its LaTeX engine once: Tectonic ${TECTONIC_VERSION} from GitHub (about 10 to 20 MB).` };
     }
-    // under $HOME: a Flatpak's /tmp is not the system's
-    const build = path.join(os.homedir(), '.cache', 'archipelago-latex', hashOf(base + '/' + doc.path));
+    const fs = require('fs'), path = require('path');
+    const folder = docFolder(doc, this.settings), base = adapter.getBasePath(), build = this.buildDir(doc);
     fs.mkdirSync(build, { recursive: true });
-    for (const f of ['main.pdf', 'main.log', 'main.bcf']) { try { fs.rmSync(path.join(build, f)); } catch { /* not there */ } }
-    const cwd = path.join(base, folder), tdir = `${archRoot(this.settings)}/${TEMPLATE_DIR}`;
-    // the trailing separator keeps TeX's own search path after these
-    const D = path.delimiter, tpath = tdir ? path.join(base, tdir) + D : '';
-    // max_print_line: the log is not wrapped at 79 columns, so "file:line: error" stays one line however long the path
-    const env = { TEXINPUTS: `${cwd}${D}${tpath}`, BIBINPUTS: `${cwd}${D}`, BSTINPUTS: `${cwd}${D}${tpath}`, max_print_line: '10000' };
-    const latex = (this.settings.latexCommand || 'pdflatex').trim();
-    const args = ['-interaction=nonstopmode', '-halt-on-error', '-file-line-error', '-jobname=main', `-output-directory=${build}`, `${name}.tex`];
-    const readLog = () => { try { return fs.readFileSync(path.join(build, 'main.log'), 'latin1'); } catch { return ''; } };
-    let r = await runTool(latex, args, cwd, env);
-    let log = readLog();
-    if (!log) {
-      const missing = /ENOENT|not found|No such file/.test(r.out);
-      return {
-        ok: false, pdf: null, log: r.out, errors: [],
-        message: missing ? (inFlatpak() ? flatpakTexHint() : `${latex} was not found. Install TeX Live, MiKTeX or MacTeX, or set the LaTeX command in Settings > Archipelago.\n${r.out.trim()}`) : `${latex} did not run: ${r.out.trim().slice(0, 400)}`,
-      };
+    for (const f of ['main.pdf', 'main.log', 'main.xdv']) { try { fs.rmSync(path.join(build, f)); } catch { /* not there */ } }
+    const cwd = path.join(base, folder), tdirAbs = path.join(base, archRoot(this.settings), TEMPLATE_DIR), stage = path.join(build, 'stage');
+    // the .bib files of the folder and what they lack, as one file (named apg_refs, so that no other .bib of that name is found first)
+    let refs = '';
+    try {
+      for (const f of (await listDir(app, folder)).files.filter(x => /\.bib$/i.test(x)).sort()) refs += (await readText(app, f)).replace(/\s*$/, '\n\n');
+    } catch { /* no .bib */ }
+    if (bib) refs += bib;
+    fs.rmSync(stage, { recursive: true, force: true });
+    fs.mkdirSync(stage, { recursive: true });
+    fs.writeFileSync(path.join(stage, 'apg_refs.bib'), refs);
+    // images from outside the document's figures/ (the LaTeX calls them figures/ext_<name>): copies in the stage
+    for (const [rel, src] of assets || []) {
+      try {
+        const dest = path.join(stage, rel);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, Buffer.from(await adapter.readBinary(src)));
+      } catch { /* missing image: the LaTeX has a box and a warning */ }
     }
-    if (r.code === 0) {
-      // the bibliography: biber when the template uses biblatex, else bibtex when the text cites
-      let aux = '';
-      try { aux = fs.readFileSync(path.join(build, 'main.aux'), 'latin1'); } catch { /* none */ }
-      let bib = null;
-      if (fs.existsSync(path.join(build, 'main.bcf'))) bib = await runTool('biber', ['--input-directory', cwd, '--output-directory', build, 'main'], build, env);
-      else if (/\\bibdata\{/.test(aux) && /\\citation\{/.test(aux)) bib = await runTool('bibtex', ['main'], build, env);
-      const rerun = /Rerun to get|Rerun LaTeX|Label\(s\) may have changed/;
-      for (let round = 0, need = !!bib || rerun.test(log); round < 3 && need; round++) {
-        r = await runTool(latex, args, cwd, env);
-        log = readLog();
-        if (r.code !== 0) break;
-        need = rerun.test(log);
-      }
-      if (bib && bib.code !== 0) log += '\n\n---- bibliography ----\n' + bib.out;
+    fs.writeFileSync(path.join(build, 'main.tex'), tex.replace(/\\bibliography\{[^}]*\}/, '\\bibliography{apg_refs}'));
+    const args = [path.join(build, 'main.tex'), '--outdir', build, '--keep-logs', '--chatter', 'minimal',
+      '-Z', `search-path=${stage}`, '-Z', `search-path=${cwd}`, '-Z', `search-path=${tdirAbs}`];
+    const r = await runTool(tectonicExe(), args, cwd, { TECTONIC_CACHE_DIR: path.join(tectonicHome(), 'cache') }, 900000);
+    let log = '';
+    try { log = fs.readFileSync(path.join(build, 'main.log'), 'latin1'); } catch { /* none */ }
+    if (!log && r.code !== 0) {
+      const offline = /network|resolve|connect|timed out|dns|tls|certificate/i.test(r.out);
+      return { ok: false, pdf: null, log: r.out, errors: Latex.logErrors(r.out.replace(/^error: /gm, ''), 'main.tex'),
+        message: offline ? 'Tectonic could not fetch the LaTeX packages it needs (it needs the internet the first time a package is used):\n' + r.out.trim().slice(0, 400) : `Tectonic did not run: ${r.out.trim().slice(0, 400)}` };
     }
-    const errors = Latex.logErrors(log, name + '.tex');
+    if (r.code !== 0) log += '\n\n---- Tectonic ----\n' + r.out;
+    const errors = Latex.logErrors(log, 'main.tex');
     let pdf = null;
     try { pdf = fs.readFileSync(path.join(build, 'main.pdf')); } catch { /* no output */ }
     if (r.code !== 0 || !pdf) return { ok: false, pdf: null, log, errors, message: errors.length ? '' : 'LaTeX stopped without a PDF; see the log.' };
-    const data = pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength);
-    try { await writeBinary(app, pdfPath, data); } catch (e) { return { ok: true, pdf: data, log, errors, message: `Could not write ${pdfPath}: ${e.message || e}` }; }
-    return { ok: true, pdf: data, log, errors, message: '' };
+    return { ok: true, pdf: pdf.buffer.slice(pdf.byteOffset, pdf.byteOffset + pdf.byteLength), log, errors, message: '' };
   }
 
   /** A view closes (or Obsidian quits) while a conflict waits for a decision: the text open there would be lost,
@@ -1068,6 +1194,17 @@ module.exports = class ArchipelagoPlugin extends Plugin {
   }
 
   async saveSettings() { await this.saveData(this.settings); }
+  /** Kept on this computer only (Obsidian's local storage of the vault, which sync tools do not carry). */
+  localGet(key) {
+    try { return typeof this.app.loadLocalStorage === 'function' ? this.app.loadLocalStorage('archipelago-' + key) : window.localStorage.getItem('archipelago-' + this.app.vault.getName() + '-' + key); } catch { return null; }
+  }
+  localSet(key, value) {
+    try {
+      if (typeof this.app.saveLocalStorage === 'function') this.app.saveLocalStorage('archipelago-' + key, value);
+      else if (value == null) window.localStorage.removeItem('archipelago-' + this.app.vault.getName() + '-' + key);
+      else window.localStorage.setItem('archipelago-' + this.app.vault.getName() + '-' + key, value);
+    } catch { /* not kept */ }
+  }
 
   /** The Overleaf Git token: from Obsidian's secret storage, or (Obsidian before 1.11.4) from the plugin settings. */
   overleafToken() {

@@ -69,7 +69,7 @@
       if (inner.includes('\n') || inner.includes('[')) return null;
       const bar = inner.indexOf('|'), target = (bar >= 0 ? inner.slice(0, bar) : inner).trim(), alias = bar >= 0 ? inner.slice(bar + 1).trim() : '';
       const file = target.replace(/#.*$/, ''), name = file.slice(file.lastIndexOf('/') + 1).replace(/\.md$/i, '');
-      const key = [alias, name].find(c => /^@[^\s,{}@]+$/.test(c));
+      const key = [name, alias].find(c => /^@[^\s,{}@]+$/.test(c));   // the note's name first, as latex.js
       return { len: e + 2, link: target, label: key || alias || name || target, cite: key ? key.slice(1) : null };
     }
     if (s[0] === '[') {
