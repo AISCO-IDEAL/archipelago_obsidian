@@ -1197,11 +1197,19 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     await ev('app.commands.executeCommandById("archipelago:new-document")');
     ok(await waitFor('!!app.vault.getAbstractFileByPath("Papers/Untitled 1.md")'), 'the next one gets a free name');
     await shot('08-new');
-    await ev('(async () => { const f = app.vault.getAbstractFileByPath("Papers/Note.md"); const leaf = app.workspace.getLeaf("tab"); await leaf.openFile(f); app.workspace.setActiveLeaf(leaf, { focus: true }); })()');
-    await waitFor('app.workspace.getActiveFile() && app.workspace.getActiveFile().path === "Papers/Note.md"', 10000);
+    // The note must be the active file (the command works on that). Obsidian now and then keeps the previous tab active for a moment: ask again.
+    let noteActive = false;
+    for (let attempt = 0; attempt < 3 && !noteActive; attempt++) {
+      await ev('(async () => { const f = app.vault.getAbstractFileByPath("Papers/Note.md"); const leaf = app.workspace.getLeaf("tab"); await leaf.openFile(f); app.workspace.setActiveLeaf(leaf, { focus: true }); })()');
+      noteActive = await waitFor('app.workspace.getActiveFile() && app.workspace.getActiveFile().path === "Papers/Note.md" && app.workspace.activeLeaf.view.getViewType() === "markdown"', 5000);
+    }
     await sleep(500);
+    if (!noteActive) console.log('  (the note did not become the active file: ' + await ev('(app.workspace.getActiveFile() || {}).path + " / " + (app.workspace.activeLeaf && app.workspace.activeLeaf.view.getViewType())') + ')');
     ok(await ev('app.commands.commands["archipelago:from-note"] !== undefined'), 'there is a command to make a document from a note');
+    // the command needs the note's editor to be the active view: wait for it, and ask once more if the first call came too early
+    await waitFor('app.workspace.activeLeaf && app.workspace.activeLeaf.view.getViewType() === "markdown" && !!app.workspace.activeLeaf.view.editor', 10000);
     await ev('app.commands.executeCommandById("archipelago:from-note")');
+    if (!await waitFor('!!app.vault.getAbstractFileByPath("Papers/Note (Archipelago).md")', 4000)) await ev('app.commands.executeCommandById("archipelago:from-note")');
     ok(await waitFor('!!app.vault.getAbstractFileByPath("Papers/Note (Archipelago).md")'), 'it creates Note (Archipelago).md');
     await waitFor('T.ui() && T.view().file && T.view().file.path === "Papers/Note (Archipelago).md"');
     ok(await waitFor('T.ui() && T.ui().S.doc.sections.map(s => s.title).join() === "Background,Method"'), 'headings become sections', await ev('T.ui() && T.ui().S.doc.sections.map(s => s.title).join()'));
