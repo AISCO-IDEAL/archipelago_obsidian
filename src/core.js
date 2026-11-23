@@ -774,6 +774,26 @@
    *  most likely grew from it, and only ids we made up since can clash with theirs.
    *  Returns { text, conflicts, segments, eol }: `text` when nothing is left to decide, else `segments`
    *  for the resolver (conflicts carry the section and claim they sit in). */
+  /** Of the versions this side has seen or written (oldest first), the one `theirs` most likely grew from: the fewest lines
+   *  that are in one and not the other (a count of lines, regardless of order). A sync tool may bring back a version we wrote
+   *  ourselves a moment ago (then it is that one, and nothing is in conflict), or another device's edit of an older version
+   *  (then it is that older one, so what we changed since is ours and stays). On a tie the older one. */
+  function closestBase(candidates, theirs) {
+    const count = t => { const m = new Map(); for (const l of t.split(/\r?\n/)) m.set(l, (m.get(l) || 0) + 1); return m; };
+    const th = count(theirs);
+    let best = null, bestD = Infinity;
+    for (const c of candidates) {
+      if (c == null) continue;
+      if (c === theirs) return c;
+      const cm = count(c);
+      let d = 0;
+      for (const [l, n] of cm) d += Math.abs(n - (th.get(l) || 0));
+      for (const [l, n] of th) if (!cm.has(l)) d += n;
+      if (d < bestD) { best = c; bestD = d; }
+    }
+    return best;
+  }
+
   function mergeDocs(base, ours, theirs, saved = base) {
     const eol = ours.includes('\r\n') ? '\r\n' : '\n';
     const baseIds = idsIn(base), oursIds = idsIn(ours), theirsIds = idsIn(theirs), savedIds = idsIn(saved);
@@ -860,6 +880,6 @@
     kind, isBlock, isMarker, isCard, groupName, setGroupName, figure, tableRows, equation,
     groupOf, groupAt, endOfGroup, normalizeGroups, numbering, endGroup, endMarker, level, withLevel, openAt, pathOf, subtreeEnd, shiftLevels, depthBelow, MAX_LEVEL,
     parse, serialize, repair, check, assignIDs, isDocument, isFormatLine,
-    lcsPairs, merge3Lines, mergeDocs, joinSegments, renameIds, idsIn, dropDangling, fixDuplicateIds, fenceAfter,
+    lcsPairs, merge3Lines, mergeDocs, closestBase, joinSegments, renameIds, idsIn, dropDangling, fixDuplicateIds, fenceAfter,
   };
 });

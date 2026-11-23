@@ -144,6 +144,26 @@ console.log('ids that were saved before a change arrived');
   ok(!Core.idsIn('<!-- archipelago v1: `# ` heading = section, island = its map position (id=s*). claim = (id=c*) -->').size, 'ids in the format line are not ids');
 }
 
+console.log('a version of ours that comes back (sync tools)');
+{
+  const v0 = '<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\n<!-- claim: x | id=c1 -->\nText.\n\n<!-- claim: y | id=c2 -->\nMore.\n\n<!-- claim: NeuralFoil | id=c25 -->\nSee\n';
+  const v1 = v0.replace('\nSee\n', '\nSee [[@ten\n');   // saved while typing a link
+  const v2 = v0.replace('\nSee\n', '\nSee [[S/@Ten Simple Rules|@Ten Simple Rules]]\n');   // saved after the suggestion
+  const from = Core.closestBase([v0, v1, v2], v1);
+  ok(from === v1, 'an earlier write of ours that comes back is its own base');
+  const r = Core.mergeDocs(from, v2, v1, v2);
+  ok(!r.conflicts && r.text === v2, 'so merging it changes nothing and asks nothing', r.segments && r.segments.filter(x => x.type === 'conflict'));
+  ok(Core.mergeDocs(v0, v2, v1, v2).conflicts === 1, '(over the base from the open, it is a conflict: the case this avoids)');
+  // another device edited the version before our last write ("newer file wins" lost our edit): our edit stays
+  const mine = v2.replace('Text.', 'Text, mine.');
+  const theirs = v2.replace('More.', 'More, theirs.');
+  const b2 = Core.closestBase([v0, v1, v2, mine], theirs);
+  ok(b2 === v2, 'an edit of an older version of ours: that version is the base', [v0, v1, v2, mine].indexOf(b2));
+  const r2 = Core.mergeDocs(b2, mine, theirs, mine);
+  ok(!r2.conflicts && r2.text.includes('Text, mine.') && r2.text.includes('More, theirs.'), 'and both edits are kept', r2.text);
+  ok(Core.closestBase([v0, v0.replace('x |', 'z |')], v0.replace('Text.', 'Other.')) === v0, 'on a tie the older version');
+}
+
 console.log('what is a document');
 {
   const doc = Core.serialize(Core.parse(base));

@@ -156,11 +156,15 @@ const sameCell = (a, b) => !!a && !!b && a.id === b.id && a.r === b.r && a.c ===
 // may be changed by someone else at any time (LiveSync, Syncthing, git, an editor). Three texts
 // keep that from losing work:
 //   knownDisk  what the file held when we last read or wrote it,
-//   base       the last text that came from outside (at open, or the last external change), the
-//              ancestor both sides grew from,
+//   base       the last text that came from outside (at open, or the last external change),
+//   seen       the versions we read or wrote lately (oldest first), base among them,
 //   ours       what is open now.
-// When the file differs from knownDisk, base / ours / theirs are merged line by line (core.js).
+// When the file differs from knownDisk, ours and theirs are merged line by line (core.js) over the version of `seen` that
+// theirs grew from: a sync tool may bring back one of our own earlier writes (LiveSync does, while one types), or another
+// device's edit of an older version.
 
+let seen = [];   // see above; a few dozen texts at most
+const remember = t => { if (seen[seen.length - 1] !== t) seen.push(t); if (seen.length > 40) seen.shift(); };
 let knownDisk = '', base = '', inflight = null, saveTimer = null, saving = false, failing = false, queue = Promise.resolve();
 const graveyard = new Map();   // images moved to the trash after a save: path -> bytes, so that undo can bring one back
 
@@ -200,6 +204,7 @@ async function load() {
   const text = await host.read();
   if (destroyed) return;
   knownDisk = base = text;
+  seen = [text];
   undoStack = []; redoStack = [];
   adopt(text);
   S.needsFit = true;
@@ -251,6 +256,7 @@ async function save() {
       if (written !== null && result === written) {
         const before = knownDisk;
         knownDisk = written;
+        remember(written);
         // an image this document no longer uses goes to the trash, with a copy kept here for undo
         if (host.tidyFigures) host.tidyFigures(before, written).then(gone => { for (const g of gone) if (g.data) graveyard.set(g.path, g.data); }).catch(() => {});
         setStatus('Saved ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
@@ -306,12 +312,21 @@ function mergeFromDisk(disk) {
     // Nothing of ours is unsaved: take the file as it is.
     adopt(disk);
     base = disk;
+    remember(disk);
     undoStack = []; redoStack = [];
     setStatus('Updated from the file');
     requestRender();
     return;
   }
-  const r = C.mergeDocs(base, ours, disk, saved);
+  const from = C.closestBase([...seen, base], disk);
+  remember(disk);
+  const r = C.mergeDocs(from, ours, disk, saved);
+  if (!r.conflicts && r.text === ours) {
+    // Nothing in the file that we do not have (an earlier version of ours came back): write ours again, keep the undo.
+    base = disk;
+    docChanged();
+    return;
+  }
   if (r.conflicts) {
     // Autosave stays off until the conflicts are decided.
     clearTimeout(saveTimer); saveTimer = null;

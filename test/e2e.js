@@ -1216,6 +1216,21 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
     ok(await waitFor('T.ui().S.doc.sections.flatMap(s => s.paragraphs).some(p => p.claim === "Edited by the other device")'), 'a change that grew from our saved file arrives');
     await settle();
     ok(await U('S.doc.sections.flatMap(s => s.paragraphs).filter(p => p.claim === "Added and saved").length') === 1 && (disk().match(/Added and saved/g) || []).length === 1, 'and the claim is there once, not twice', { inDoc: await U('S.doc.sections.flatMap(s => s.paragraphs).filter(p => p.claim === "Added and saved").map(p => p.cid)'), onDisk: (disk().match(/.*Added and saved.*/g) || []), status: await U('S.status') });
+    // LiveSync brings back a version we wrote a moment ago (as it does while one types): no question, ours is written again
+    await editClaimTo('We evaluate on a bracket', 'Echo, first save');
+    await settle();
+    const echo = disk();
+    ok(echo.includes('Echo, first save'), 'a first version is saved');
+    await editClaimTo('Echo, first save', 'Echo, second save');
+    await settle();
+    ok(disk().includes('Echo, second save'), 'and then a second one');
+    fs.writeFileSync(file, echo);
+    await sleep(1500);
+    ok(!(await ev('T.ui().hasConflict()')), 'the first version coming back asks nothing', await ev('T.ui().hasConflict() && T.q("#overlay").textContent.slice(0, 200)'));
+    await settle();
+    ok(await U('S.doc.sections.flatMap(s => s.paragraphs).some(p => p.claim === "Echo, second save")') && disk().includes('Echo, second save') && !disk().includes('Echo, first save'), 'the view keeps the second, and writes it again');
+    await editClaimTo('Echo, second save', 'We evaluate on a bracket');
+    await settle();
     // a failed save is said, kept, and tried again
     await ev(`window.__process = app.vault.process.bind(app.vault); window.__fails = 1; app.vault.process = (f, fn) => window.__fails-- > 0 ? Promise.reject(new Error('disk full')) : window.__process(f, fn);`);
     await editClaimTo('We evaluate on a bracket', 'Written after a failure');
