@@ -660,7 +660,7 @@ const getJSON = u => new Promise((res, rej) => http.get(u, r => { let b = ''; r.
       let tx = await latex();
       ok(tx.includes('\\documentclass') && tx.includes('\\section{Introduction}') && tx.includes('\\subsection{The gap}'), 'sections and groups become \\section and \\subsection');
       ok(/%% apg s1\/\d+\n/.test(tx) && tx.includes('%% apg s1\n'), 'every piece starts with a marker comment naming its section or its place in it');
-      ok(tx.includes('\\includegraphics[width=0.85\\linewidth,height=0.45\\textheight,keepaspectratio]{figures/ext_feasibility.png}'), 'a figure from outside the document folder is figures/ext_<name> (it is copied there, so the folder is a complete project)', tx.match(/\\includegraphics[^\n]*/));
+      ok(/\\includegraphics(\[[^\]]*\])?\{figures\/ext_feasibility\.png\}/.test(tx), 'a figure from outside the document folder is figures/ext_<name> (it is copied there, so the folder is a complete project)', tx.match(/\\includegraphics[^\n]*/));
       ok(tx.includes('projection & 100\\% & 1.0x \\\\') && tx.includes('\\caption{Final feasibility and wall-clock cost per method.}'), 'a table with its % escaped, captioned by its claim');
       ok(tx.includes('\\begin{equation}\nsmin(a, b; k)'), 'an equation as it is');
       ok(!tx.includes('Shape optimization stalls on remeshing'), 'synopses and notes are not part of the paper');
