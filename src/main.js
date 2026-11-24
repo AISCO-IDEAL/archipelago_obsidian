@@ -810,21 +810,22 @@ module.exports = class ArchipelagoPlugin extends Plugin {
 
   // ---- LaTeX ----
 
-  /** The LaTeX templates: the `.tex` files of `latex_templates/` in the Archipelago folder, then the built-in ones of other names. */
+  /** The LaTeX templates: the `.tex` files of `latex_templates/` in the Archipelago folder; the built-in ones only when
+   *  the folder has none. */
   async latexTemplates() {
     const dir = `${archRoot(this.settings)}/${TEMPLATE_DIR}`, out = [];
     const files = (await listDir(this.app, dir)).files.filter(f => /\.tex$/i.test(f)).sort((a, b) => baseOf(a).localeCompare(baseOf(b)));
     for (const path of files) out.push({ name: baseOf(path).replace(/\.tex$/i, ''), text: await readText(this.app, path), path });
-    for (const t of Latex.BUILTIN) if (!out.some(o => o.name === t.name)) out.push(t);
-    return out;
+    return out.length ? out : [...Latex.BUILTIN];
   }
 
-  /** `latex_templates/` in the Archipelago folder, with the built-in templates in it to start from. */
+  /** `latex_templates/` in the Archipelago folder; when it has no template, the built-in ones to start from. */
   async ensureTemplateFolder() {
     const dir = `${archRoot(this.settings)}/${TEMPLATE_DIR}`;
-    // A built-in template that is missing is written again, one that exists is never touched (so an edited one stays).
-    // Put a different template of your own beside them to use it; a deleted built-in one comes back.
+    // The built-in templates are written only into a folder without any .tex, and an existing file is never touched
+    // (so an edited one stays). A deleted built-in template stays deleted while the folder has a template of its own.
     await makeDirs(this.app, dir);
+    if ((await listDir(this.app, dir)).files.some(f => /\.tex$/i.test(f))) return;
     for (const t of Latex.BUILTIN) {
       const path = normalizePath(`${dir}/${t.name}.tex`);
       if (!(await fileExists(this.app, path))) await writeText(this.app, path, t.text);
