@@ -471,6 +471,7 @@ class ArchipelagoView extends FileView {
       settings: () => plugin.settings,
       read: () => app.vault.read(file),
       process: fn => app.vault.process(file, fn),
+      history: plugin.historyOf(file),
       notice: text => new Notice(text, 10000),
       name: () => file.name,
       figureTarget: rel => figureTarget(app, file, rel),
@@ -1000,6 +1001,24 @@ module.exports = class ArchipelagoPlugin extends Plugin {
         await writeText(app, path, tex);
         return path;
       },
+    };
+  }
+
+  /** The versions of a document this computer wrote or read lately, kept outside the vault (gzip, per computer, pruned after
+   *  30 days), so that a sync tool bringing back one of our own old versions is recognised also after a restart. */
+  historyOf(file) {
+    const fs = require('fs'), path = require('path'), os = require('os'), zlib = require('zlib');
+    const dir = path.join(os.homedir(), '.cache', 'archipelago-history');
+    const f = path.join(dir, hashOf(adapterOf(this.app).getBasePath() + '/' + file.path) + '.json.gz');
+    return {
+      load: () => {
+        if (!this.historyPruned) {   // once per session: files nobody has touched for a month
+          this.historyPruned = true;
+          try { for (const n of fs.readdirSync(dir)) { const p = path.join(dir, n); if (Date.now() - fs.statSync(p).mtimeMs > 30 * 864e5) fs.unlinkSync(p); } } catch { /* no folder yet */ }
+        }
+        try { const list = JSON.parse(zlib.gunzipSync(fs.readFileSync(f)).toString('utf8')); return Array.isArray(list) ? list : []; } catch { return []; }
+      },
+      save: list => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(f, zlib.gzipSync(JSON.stringify(list))); },
     };
   }
 

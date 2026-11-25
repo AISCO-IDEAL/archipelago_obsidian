@@ -838,10 +838,19 @@
 
   const sameLines = (x, y) => x.length === y.length && x.every((l, i) => l === y[i]);
 
+  /** The same lines changed on both sides: a three-way merge by words and spaces. The lines, or null when the changes touch
+   *  the same words (or sit at the same place, where the order of two insertions would be a guess). */
+  function mergeWords(oR, aR, bR) {
+    const tok = ls => ls.join('\n').split(/(\s+)/).filter(x => x !== '');
+    const segs = merge3Lines(tok(oR), tok(aR), tok(bR), false);
+    if (segs.some(x => x.type === 'conflict')) return null;
+    return segs.flatMap(x => x.lines).join('').split('\n');
+  }
+
   /** Three-way merge by lines. Segments: { type: 'same', lines } and { type: 'conflict', ours, theirs }.
-   *  A change on one side only, the same change on both sides, and two insertions at one place
-   *  (kept both, ours first) merge on their own. */
-  function merge3Lines(o, a, b) {
+   *  A change on one side only, the same change on both sides, two insertions at one place
+   *  (kept both, ours first) and changes of different words of one line of text (a paragraph, not a comment line) merge on their own. */
+  function merge3Lines(o, a, b, fine = true) {
     const pa = lcsPairs(o, a), pb = lcsPairs(o, b);
     if (!pa || !pb) return [{ type: 'conflict', ours: a, theirs: b }];
     const ma = new Int32Array(o.length).fill(-1), mb = new Int32Array(o.length).fill(-1);
@@ -860,8 +869,12 @@
       const oR = o.slice(io, i), aR = a.slice(ia, ja), bR = b.slice(ib, jb);
       if (sameLines(aR, oR)) same(bR);
       else if (sameLines(bR, oR) || sameLines(aR, bR)) same(aR);
-      else if (!oR.length) { same(aR); same(bR); }
-      else segs.push({ type: 'conflict', ours: aR, theirs: bR });
+      else if (!oR.length && fine) { same(aR); same(bR); }
+      else {
+        // Both sides changed the same lines: if they changed different words of them, take both.
+        const m = fine && oR.length === 1 && aR.length === 1 && bR.length === 1 && !/^\s*<!--/.test(oR[0]) ? mergeWords(oR, aR, bR) : null;
+        if (m) same(m); else segs.push({ type: 'conflict', ours: aR, theirs: bR });
+      }
       if (i < o.length) same([o[i]]);
       io = i + 1; ia = ja + 1; ib = jb + 1;
     }

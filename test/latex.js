@@ -49,6 +49,10 @@ const sp = 'a **bold *and* x** ~~s~~ ==h== %%c **no** %% <span style="color:red"
 ok(R.spans(sp).map(p => p.t).join('') === sp, 'a text read into pieces is the same text, markers included');
 ok(R.spans(sp).filter(p => !p.mk && p.b && p.i).map(p => p.t).join() === 'and' && R.spans(sp).some(p => p.code && p.t === '`**c**`') && R.spans(sp).some(p => p.c && !p.b), 'nesting, code, and no styles inside a comment');
 ok(R.plain('**a** %%c%% ==b==') === 'a c b', 'without markers');
+{
+  const t = 'see https://a.org/x?y=1. Then (http://b.org) and [t](https://c.org)', u = R.spans(t).filter(p => p.link);
+  ok(u.map(p => p.link).join() === 'https://a.org/x?y=1,http://b.org,https://c.org' && u.every(p => p.url) && R.spans(t).map(p => p.t).join('') === t, 'a bare web address is a link, without the punctuation that ends the sentence');
+}
 const lk = R.spans('see [[Source/x/@key2025|@key2025]] and [[Note|shown]] and [t](https://x.org) and [[a]]b');
 ok(lk.map(p => p.t).join('') === 'see [[Source/x/@key2025|@key2025]] and [[Note|shown]] and [t](https://x.org) and [[a]]b' && lk.filter(p => p.link).map(p => p.label + (p.cite ? '!' + p.cite : '')).join() === '@key2025!key2025,shown,t,a', 'links are read as pieces: a literature note is a citation, an alias or the note name is the label');
 let t1 = R.toggle('hello big world', 6, 9, 'b');

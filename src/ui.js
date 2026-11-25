@@ -164,7 +164,18 @@ const sameCell = (a, b) => !!a && !!b && a.id === b.id && a.r === b.r && a.c ===
 // device's edit of an older version.
 
 let seen = [];   // see above; a few dozen texts at most
-const remember = t => { if (seen[seen.length - 1] !== t) seen.push(t); if (seen.length > 40) seen.shift(); };
+const SEEN_MAX = 100, SEEN_CHARS = 3e6;   // the versions kept: at most this many, and about this much text (a few MB at most)
+let historyTimer = null;
+const remember = t => {
+  if (seen[seen.length - 1] === t) return;
+  const i = seen.indexOf(t);
+  if (i >= 0) seen.splice(i, 1);   // a version that comes back counts as the newest
+  seen.push(t);
+  let size = seen.reduce((n, x) => n + x.length, 0);
+  while (seen.length > 2 && (seen.length > SEEN_MAX || size > SEEN_CHARS)) size -= seen.shift().length;
+  // kept on this computer, so that a version of ours that a sync tool brings back later is still known (also after a restart)
+  if (host.history && !historyTimer) historyTimer = setTimeout(() => { historyTimer = null; try { host.history.save(seen); } catch { /* the history is a help, not needed */ } }, 3000);
+};
 let knownDisk = '', base = '', inflight = null, saveTimer = null, saving = false, failing = false, queue = Promise.resolve();
 const graveyard = new Map();   // images moved to the trash after a save: path -> bytes, so that undo can bring one back
 
@@ -205,7 +216,11 @@ async function load() {
   const text = await host.read();
   if (destroyed) return;
   knownDisk = base = text;
-  seen = [text];
+  let earlier = [];
+  try { earlier = (host.history && host.history.load()) || []; } catch { /* none */ }
+  seen = [];
+  for (const t of earlier) if (typeof t === 'string' && t !== text) seen.push(t);
+  seen.push(text);
   undoStack = []; redoStack = [];
   adopt(text);
   S.needsFit = true;
@@ -309,6 +324,13 @@ function mergeFromDisk(disk) {
   knownDisk = disk;
   const ours = currentText();
   if (disk === ours) { base = disk; return; }
+  if (saved === ours && disk !== saved && seen.includes(disk)) {
+    // An older version of ours that a sync tool brought back (nothing else is in it): not a change from elsewhere, ours stays
+    // and is written again. Without this an old line would replace what was typed since.
+    knownDisk = disk; base = disk;
+    docChanged();
+    return;
+  }
   if (ours === base) {
     // Nothing of ours is unsaved: take the file as it is.
     adopt(disk);
