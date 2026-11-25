@@ -153,29 +153,20 @@ const sameCell = (a, b) => !!a && !!b && a.id === b.id && a.r === b.r && a.c ===
 // ---- the file: load, save, and merge with changes made elsewhere ----
 //
 // The document is saved to its file by `host.process` and read back by `host.read`. The same file
-// may be changed by someone else at any time (LiveSync, Syncthing, git, an editor). Three texts
+// may be changed by someone else at any time (LiveSync, Syncthing, git, an editor). Four texts
 // keep that from losing work:
 //   knownDisk  what the file held when we last read or wrote it,
 //   base       the last text that came from outside (at open, or the last external change),
-//   seen       the versions we read or wrote lately (oldest first), base among them,
+//   writes     what we wrote since base, oldest first: with base, one line of descent,
 //   ours       what is open now.
-// When the file differs from knownDisk, ours and theirs are merged line by line (core.js) over the version of `seen` that
-// theirs grew from: a sync tool may bring back one of our own earlier writes (LiveSync does, while one types), or another
-// device's edit of an older version.
+// When the file differs from knownDisk, ours and theirs are merged line by line (core.js) over the version theirs grew from:
+// the newest of base and our writes that the file has (C.growthBase). A sync tool that merges (LiveSync) passes on our last
+// write, so that is the base, as in any editor; the merging between devices is then the sync tool's, and here only what was
+// typed since the last write is merged in. Nothing is guessed: a merge over a version theirs did not grow from would keep
+// what theirs had removed (an old line of someone else's, again and again) or take out what we had written.
 
-let seen = [];   // see above; a few dozen texts at most
-const SEEN_MAX = 100, SEEN_CHARS = 3e6;   // the versions kept: at most this many, and about this much text (a few MB at most)
-let historyTimer = null;
-const remember = t => {
-  if (seen[seen.length - 1] === t) return;
-  const i = seen.indexOf(t);
-  if (i >= 0) seen.splice(i, 1);   // a version that comes back counts as the newest
-  seen.push(t);
-  let size = seen.reduce((n, x) => n + x.length, 0);
-  while (seen.length > 2 && (seen.length > SEEN_MAX || size > SEEN_CHARS)) size -= seen.shift().length;
-  // kept on this computer, so that a version of ours that a sync tool brings back later is still known (also after a restart)
-  if (host.history && !historyTimer) historyTimer = setTimeout(() => { historyTimer = null; try { host.history.save(seen); } catch { /* the history is a help, not needed */ } }, 3000);
-};
+let writes = [];
+const WRITES_MAX = 200;   // a long session without anything from outside: the oldest write becomes the base
 let knownDisk = '', base = '', inflight = null, saveTimer = null, saving = false, failing = false, queue = Promise.resolve();
 const graveyard = new Map();   // images moved to the trash after a save: path -> bytes, so that undo can bring one back
 
@@ -216,11 +207,7 @@ async function load() {
   const text = await host.read();
   if (destroyed) return;
   knownDisk = base = text;
-  let earlier = [];
-  try { earlier = (host.history && host.history.load()) || []; } catch { /* none */ }
-  seen = [];
-  for (const t of earlier) if (typeof t === 'string' && t !== text) seen.push(t);
-  seen.push(text);
+  writes = [];
   undoStack = []; redoStack = [];
   adopt(text);
   S.needsFit = true;
@@ -229,7 +216,7 @@ async function load() {
   docChanged();   // ids and positions added on open are saved by the next autosave
 }
 
-const autosaveMs = () => Math.max(300, (host.settings().autosaveSeconds ?? 1.5) * 1000);
+const autosaveMs = () => Math.max(300, (host.settings().autosaveSeconds ?? 2) * 1000);
 
 /** Called after every change of the document. */
 function docChanged() {
@@ -272,7 +259,8 @@ async function save() {
       if (written !== null && result === written) {
         const before = knownDisk;
         knownDisk = written;
-        remember(written);
+        writes.push(written);
+        if (writes.length > WRITES_MAX) base = writes.shift();
         // an image this document no longer uses goes to the trash, with a copy kept here for undo
         if (host.tidyFigures) host.tidyFigures(before, written).then(gone => { for (const g of gone) if (g.data) graveyard.set(g.path, g.data); }).catch(() => {});
         setStatus('Saved ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
@@ -323,30 +311,21 @@ function mergeFromDisk(disk) {
   const saved = knownDisk;   // what we last wrote (or last read)
   knownDisk = disk;
   const ours = currentText();
-  if (disk === ours) { base = disk; return; }
-  if (saved === ours && disk !== saved && seen.includes(disk)) {
-    // An older version of ours that a sync tool brought back (nothing else is in it): not a change from elsewhere, ours stays
-    // and is written again. Without this an old line would replace what was typed since.
-    knownDisk = disk; base = disk;
-    docChanged();
-    return;
-  }
-  if (ours === base) {
-    // Nothing of ours is unsaved: take the file as it is.
+  if (disk === ours) { base = disk; writes = []; return; }
+  const from = C.growthBase([base, ...writes], disk);
+  if (ours === from) {
+    // Nothing of ours that the file lacks: take the file as it is.
     adopt(disk);
-    base = disk;
-    remember(disk);
+    base = disk; writes = [];
     undoStack = []; redoStack = [];
     setStatus('Updated from the file');
     requestRender();
     return;
   }
-  const from = C.closestBase([...seen, base], disk);
-  remember(disk);
   const r = C.mergeDocs(from, ours, disk, saved);
   if (!r.conflicts && r.text === ours) {
-    // Nothing in the file that we do not have (an earlier version of ours came back): write ours again, keep the undo.
-    base = disk;
+    // Nothing in the file that we do not have (one of our own writes came back): ours stays and is written again. It did
+    // not come from outside, so base and our writes stay as they are.
     docChanged();
     return;
   }
@@ -363,7 +342,7 @@ function mergeFromDisk(disk) {
 function applyMerged(text, disk) {
   adopt(text);
   const renamed = C.fixDuplicateIds(S.doc);   // two sides that made up the same id, one of them already saved
-  base = disk;
+  base = disk; writes = [];
   undoStack = []; redoStack = [];   // an older snapshot would bring the other side's changes back out
   setStatus(renamed.length ? `Merged changes made elsewhere; cleaned up ${renamed.length} claim${renamed.length > 1 ? 's' : ''} that came twice` : 'Merged changes made elsewhere');
   requestRender();

@@ -14,7 +14,7 @@ const VIEW_TYPE = 'archipelago-view';
 const EXT = 'apg';           // legacy documents, which sync tools treat as binary
 const DOC_EXT = 'md';        // what new documents are
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'avif'];
-const DEFAULTS = { autosaveSeconds: 1.5, archipelagoFolder: 'Archipelago' };
+const DEFAULTS = { autosaveSeconds: 2, archipelagoFolder: 'Archipelago' };
 const OLD_DEFAULT_FOLDER = '99_attachments_c_docs/archipelago';   // the default before 0.3
 /** The id of the Overleaf token in Obsidian's secret storage (the system's keychain), where Obsidian has one (1.11.4). */
 const TOKEN_ID = 'archipelago-overleaf-token';
@@ -471,7 +471,6 @@ class ArchipelagoView extends FileView {
       settings: () => plugin.settings,
       read: () => app.vault.read(file),
       process: fn => app.vault.process(file, fn),
-      history: plugin.historyOf(file),
       notice: text => new Notice(text, 10000),
       name: () => file.name,
       figureTarget: rel => figureTarget(app, file, rel),
@@ -536,7 +535,7 @@ class ArchipelagoSettings extends PluginSettingTab {
     el.empty();
     new Setting(el)
       .setName('Save delay')
-      .setDesc('Seconds between your last change and the file being written. Sync tools upload on every write, so a longer delay means fewer versions.')
+      .setDesc('Seconds between your last change and the file being written. Sync tools upload on every write, so a longer delay means fewer versions. With several people writing at once over LiveSync, keep it at 2 s or more: versions that come faster than they reach the others make LiveSync merge over an older one and ask.')
       .addSlider(s => s.setLimits(0.5, 10, 0.5).setValue(this.plugin.settings.autosaveSeconds).setDynamicTooltip()
         .onChange(async v => { this.plugin.settings.autosaveSeconds = v; await this.plugin.saveSettings(); }));
     new Setting(el)
@@ -583,7 +582,17 @@ module.exports = class ArchipelagoPlugin extends Plugin {
     delete saved.figureFolder; delete saved.latexTemplateFolder;
     // a vault that used the old default folder without saving it keeps it
     if (!saved.archipelagoFolder && await this.app.vault.adapter.exists(OLD_DEFAULT_FOLDER)) saved.archipelagoFolder = OLD_DEFAULT_FOLDER;
+    // Once: a save delay below 2 s goes to 2 s. LiveSync merges two versions over the last one both had, and versions
+    // written faster than they reach the other devices make it merge over an older one, so that its own conflicts appear.
+    // The earlier merge kept a history of versions outside the vault; it is not needed any more.
+    const migrate = !saved.saveDelay2;
+    if (migrate) {
+      if (typeof saved.autosaveSeconds === 'number' && saved.autosaveSeconds < 2) saved.autosaveSeconds = 2;
+      saved.saveDelay2 = true;
+      try { require('fs').rmSync(require('path').join(require('os').homedir(), '.cache', 'archipelago-history'), { recursive: true, force: true }); } catch { /* not there */ }
+    }
     this.settings = Object.assign({}, DEFAULTS, saved);
+    if (migrate) await this.saveData(this.settings);
     // a token kept in plain text by earlier versions moves into the secret storage
     if (this.settings.overleafToken && this.app.secretStorage) await this.setToken(this.settings.overleafToken);
     addIcon('archipelago', ICON_SVG);
@@ -1008,24 +1017,6 @@ module.exports = class ArchipelagoPlugin extends Plugin {
         await writeText(app, path, tex);
         return path;
       },
-    };
-  }
-
-  /** The versions of a document this computer wrote or read lately, kept outside the vault (gzip, per computer, pruned after
-   *  30 days), so that a sync tool bringing back one of our own old versions is recognised also after a restart. */
-  historyOf(file) {
-    const fs = require('fs'), path = require('path'), os = require('os'), zlib = require('zlib');
-    const dir = path.join(os.homedir(), '.cache', 'archipelago-history');
-    const f = path.join(dir, hashOf(adapterOf(this.app).getBasePath() + '/' + file.path) + '.json.gz');
-    return {
-      load: () => {
-        if (!this.historyPruned) {   // once per session: files nobody has touched for a month
-          this.historyPruned = true;
-          try { for (const n of fs.readdirSync(dir)) { const p = path.join(dir, n); if (Date.now() - fs.statSync(p).mtimeMs > 30 * 864e5) fs.unlinkSync(p); } } catch { /* no folder yet */ }
-        }
-        try { const list = JSON.parse(zlib.gunzipSync(fs.readFileSync(f)).toString('utf8')); return Array.isArray(list) ? list : []; } catch { return []; }
-      },
-      save: list => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(f, zlib.gzipSync(JSON.stringify(list))); },
     };
   }
 

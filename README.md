@@ -33,6 +33,15 @@ Write a paper in Obsidian twice over: as a **map** of claims and arguments, and 
   - Conflicts ask.
 - **The way back:** a `.tex` edited elsewhere can be taken over. LaTeX that has no Markdown form stays raw LaTeX, so nothing is lost.
 
+## Writing together
+
+Several people can write in one document at the same time when a sync tool carries the file (Self-hosted LiveSync in LiveSync mode). The sync tool merges the versions of the devices; the open view merges only what was typed since its last write, over that write, so text from elsewhere is never taken out and never comes twice. Two people changing the same paragraph within a few seconds are asked. With LiveSync:
+
+- *Always overwrite with a newer file* off, and *Always prompt merge conflicts* off (the defaults): LiveSync merges, and it does not write over a change it has not stored yet.
+- *Batch database updates in LiveSync mode* off.
+- Save delay (Settings › Archipelago) 2 s or more. Versions that come faster than they reach the other devices make LiveSync merge over an older one and ask.
+- Everyone on the same LiveSync version (1.0.42 or newer).
+
 ## Limitations
 
 - **Not taken over from LaTeX:** claims, links and map positions (they are not in the `.tex`), heading-level changes, and removed headings or blocks.

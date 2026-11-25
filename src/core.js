@@ -908,24 +908,21 @@
    *  most likely grew from it, and only ids we made up since can clash with theirs.
    *  Returns { text, conflicts, segments, eol }: `text` when nothing is left to decide, else `segments`
    *  for the resolver (conflicts carry the section and claim they sit in). */
-  /** Of the versions this side has seen or written (oldest first), the one `theirs` most likely grew from: the fewest lines
-   *  that are in one and not the other (a count of lines, regardless of order). A sync tool may bring back a version we wrote
-   *  ourselves a moment ago (then it is that one, and nothing is in conflict), or another device's edit of an older version
-   *  (then it is that older one, so what we changed since is ours and stays). On a tie the older one. */
-  function closestBase(candidates, theirs) {
-    const count = t => { const m = new Map(); for (const l of t.split(/\r?\n/)) m.set(l, (m.get(l) || 0) + 1); return m; };
-    const th = count(theirs);
-    let best = null, bestD = Infinity;
-    for (const c of candidates) {
-      if (c == null) continue;
-      if (c === theirs) return c;
-      const cm = count(c);
-      let d = 0;
-      for (const [l, n] of cm) d += Math.abs(n - (th.get(l) || 0));
-      for (const [l, n] of th) if (!cm.has(l)) d += n;
-      if (d < bestD) { best = c; bestD = d; }
+  /** The version `theirs` grew from, out of `chain`: the last text that came from outside, then our own writes since, oldest
+   *  first (one line of descent, nothing guessed). It is the newest of them whose own lines (the lines it has more of than
+   *  chain[0], blank lines aside) are all in theirs. Normally that is our last write, which a sync tool passes on with the
+   *  other side's changes. A write of ours that comes back is its own base, so nothing changes. A file that never had our
+   *  writes (a "newer file wins" sync) has chain[0] as its base, so what we wrote stays ours instead of being taken out. */
+  function growthBase(chain, theirs) {
+    const count = t => { const m = new Map(); for (const l of t.split(/\r?\n/)) if (l.trim()) m.set(l, (m.get(l) || 0) + 1); return m; };
+    const from = count(chain[0]), th = count(theirs);
+    for (let k = chain.length - 1; k > 0; k--) {
+      if (chain[k] === theirs) return chain[k];
+      let has = true;
+      for (const [l, n] of count(chain[k])) if (n > (from.get(l) || 0) && (th.get(l) || 0) < n) { has = false; break; }
+      if (has) return chain[k];
     }
-    return best;
+    return chain[0];
   }
 
   function mergeDocs(base, ours, theirs, saved = base) {
@@ -1014,6 +1011,6 @@
     kind, isBlock, isMarker, isCard, isText, textSlot, textIndexes, getText, setText, normalizeText, chunks, groupName, setGroupName, figure, tableRows, equation,
     groupOf, groupAt, endOfGroup, normalizeGroups, numbering, plan, inactiveIds, endGroup, endMarker, level, withLevel, openAt, pathOf, subtreeEnd, shiftLevels, depthBelow, MAX_LEVEL,
     parse, serialize, repair, check, assignIDs, isDocument, isFormatLine,
-    lcsPairs, merge3Lines, mergeDocs, closestBase, joinSegments, renameIds, idsIn, dropDangling, fixDuplicateIds, fenceAfter,
+    lcsPairs, merge3Lines, mergeDocs, growthBase, joinSegments, renameIds, idsIn, dropDangling, fixDuplicateIds, fenceAfter,
   };
 });

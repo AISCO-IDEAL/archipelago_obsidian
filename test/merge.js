@@ -149,19 +149,45 @@ console.log('a version of ours that comes back (sync tools)');
   const v0 = '<!-- archipelago v1 -->\n# A\n<!-- island: id=s1 x=0 y=0 -->\n<!-- claim: x | id=c1 -->\nText.\n\n<!-- claim: y | id=c2 -->\nMore.\n\n<!-- claim: NeuralFoil | id=c25 -->\nSee\n';
   const v1 = v0.replace('\nSee\n', '\nSee [[@ten\n');   // saved while typing a link
   const v2 = v0.replace('\nSee\n', '\nSee [[S/@Ten Simple Rules|@Ten Simple Rules]]\n');   // saved after the suggestion
-  const from = Core.closestBase([v0, v1, v2], v1);
+  // chain: the last version from outside (v0), then our writes since
+  const from = Core.growthBase([v0, v1, v2], v1);
   ok(from === v1, 'an earlier write of ours that comes back is its own base');
   const r = Core.mergeDocs(from, v2, v1, v2);
   ok(!r.conflicts && r.text === v2, 'so merging it changes nothing and asks nothing', r.segments && r.segments.filter(x => x.type === 'conflict'));
   ok(Core.mergeDocs(v0, v2, v1, v2).conflicts === 1, '(over the base from the open, it is a conflict: the case this avoids)');
-  // another device edited the version before our last write ("newer file wins" lost our edit): our edit stays
+  // the usual case: the sync tool passes on our last write with another device's change in it
   const mine = v2.replace('Text.', 'Text, mine.');
-  const theirs = v2.replace('More.', 'More, theirs.');
-  const b2 = Core.closestBase([v0, v1, v2, mine], theirs);
-  ok(b2 === v2, 'an edit of an older version of ours: that version is the base', [v0, v1, v2, mine].indexOf(b2));
-  const r2 = Core.mergeDocs(b2, mine, theirs, mine);
+  const theirs = mine.replace('More.', 'More, theirs.');
+  ok(Core.growthBase([v0, v1, v2, mine], theirs) === mine, 'a file that has our last write grew from it');
+  // a device edited a version before our last write ("newer file wins" lost our write): our write is not taken out
+  const older = v2.replace('More.', 'More, theirs.');
+  const b2 = Core.growthBase([v0, v1, v2, mine], older);
+  ok(b2 === v2, 'a file that has an earlier write of ours only grew from that one', [v0, v1, v2, mine].indexOf(b2));
+  const r2 = Core.mergeDocs(b2, mine, older, mine);
   ok(!r2.conflicts && r2.text.includes('Text, mine.') && r2.text.includes('More, theirs.'), 'and both edits are kept', r2.text);
-  ok(Core.closestBase([v0, v0.replace('x |', 'z |')], v0.replace('Text.', 'Other.')) === v0, 'on a tie the older version');
+  const none = v0.replace('More.', 'Other.');
+  ok(Core.growthBase([v0, v1, v2], none) === v0, 'a file without any write of ours grew from the last version from outside');
+}
+
+console.log('three people, three sections: nothing comes twice, nothing removed comes back');
+{
+  const doc = (a, b) => `<!-- archipelago v1 -->\n# Intro\n<!-- island: id=s1 x=0 y=0 -->\n${a}\n\n# Method\n<!-- island: id=s2 x=600 y=0 -->\n${b}\n`;
+  const A1 = 'Beams are used in engineering', A2 = 'Beams are widely used in engineering, for roofs.';
+  // we write in Method; Alice's paragraph in Intro arrived as A1 (from outside), we wrote twice since
+  const ext = doc(A1, 'Ours.');
+  const w1 = doc(A1, 'Ours. More'), w2 = doc(A1, 'Ours. More text');
+  const ours = doc(A1, 'Ours. More text, typed since.');
+  const theirs = doc(A2, 'Ours. More text');   // Alice's file: our last write and her newer sentence
+  const from = Core.growthBase([ext, w1, w2], theirs);
+  ok(from === w2, 'the base is our last write, which the file has');
+  const m = Core.mergeDocs(from, ours, theirs, w2);
+  ok(!m.conflicts && m.text === doc(A2, 'Ours. More text, typed since.'), 'her sentence once, in its newest form, with ours', m.text);
+  // an old version of her sentence that came twice: she removed the second one, we must not bring it back
+  const twice = `${A1}\n\n${A2}`;
+  const w3 = doc(twice, 'Ours. More text');
+  const cleaned = doc(A2, 'Ours. More text');
+  const m2 = Core.mergeDocs(Core.growthBase([ext, w3], cleaned), doc(twice, 'Ours. More text!'), cleaned, w3);
+  ok(!m2.conflicts && m2.text === doc(A2, 'Ours. More text!'), 'a line removed elsewhere stays removed', m2.text);
 }
 
 console.log('different words of one line');
