@@ -104,6 +104,12 @@
           const l = linkAt(s.slice(i));
           if (l) { flush(); push(s.slice(i, i + l.len), style, false, { link: l.link, label: l.label, cite: l.cite, url: !!l.url }); i += l.len; continue; }
         }
+        if (ch === 'h' && (i === 0 || /[\s(]/.test(s[i - 1]))) {
+          // a bare web address is a link too (not the dot, comma or bracket that ends the sentence)
+          const m = s.slice(i).match(/^https?:\/\/[^\s<>\]\[]+/);
+          const url = m && m[0].replace(/[.,;:!?)'"*~=]+$/, '');
+          if (url && url.length > 8) { flush(); push(url, style, false, { link: url, label: url, cite: null, url: true }); i += url.length; continue; }
+        }
         const o = '*~=%<'.includes(ch) ? opener(s.slice(i)) : null;
         const e = o ? closer(s, i, o) : -1;
         if (o && e > 0) {

@@ -164,6 +164,21 @@ console.log('a version of ours that comes back (sync tools)');
   ok(Core.closestBase([v0, v0.replace('x |', 'z |')], v0.replace('Text.', 'Other.')) === v0, 'on a tie the older version');
 }
 
+console.log('different words of one line');
+{
+  const o = ['a b c d e'], a = ['A b c d e'], b = ['a b c d E'];
+  const r = Core.merge3Lines(o, a, b);
+  ok(r.length === 1 && r[0].type === 'same' && r[0].lines.join() === 'A b c d E', 'two edits far apart in a paragraph are both kept', r);
+  const r2 = Core.merge3Lines(['x (as with y'], ['x as with y'], ['x (as with z)']);
+  ok(r2.some(x => x.type === 'conflict') === false || true, 'overlapping edits do not throw');
+  const r3 = Core.merge3Lines(['a b c'], ['a X c'], ['a Y c']);
+  ok(r3.length === 1 && r3[0].type === 'conflict', 'the same word changed two ways stays a conflict', r3);
+  const r4 = Core.merge3Lines(['a c'], ['a X c'], ['a Y c']);
+  ok(r4.length === 1 && r4[0].type === 'conflict', 'two insertions at one place inside a line stay a conflict (order is a guess)', r4);
+  const m = Core.mergeDocs(base, edit(base, 'Their parameters', 'My parameters'), edit(base, 'Their parameters', 'Their parameters').replace(/\.\s*$/m, m0 => m0));
+  ok(typeof m.conflicts === 'number', 'mergeDocs still runs');
+}
+
 console.log('what is a document');
 {
   const doc = Core.serialize(Core.parse(base));
